@@ -63,6 +63,15 @@ button{ font-family:inherit; }
   animation:pulse 2s ease-in-out infinite;
 }
 @keyframes pulse{ 0%,100%{opacity:1;} 50%{opacity:.35;} }
+/* icône statique (non animée) : scan en pause / pas encore démarré */
+.brand-dot.paused{
+  animation:none;
+  opacity:1;
+  background:var(--text-dim);
+  box-shadow:none;
+  border-radius:2px;
+  transform:scale(.9);
+}
 
 .state-pill{
   font-family:'Space Mono',monospace;

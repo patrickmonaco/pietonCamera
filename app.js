@@ -1,22 +1,20 @@
 // Radar Piéton — prototype de détection de présence humaine par caméra (COCO-SSD)
 //
-// v3 : on suit la classe "person" (v2) et on ajoute une estimation de
-// vitesse de rapprochement en km/h, à partir d'une distance approximative
-// déduite de la taille de la personne dans l'image (modèle sténopé, en
-// supposant une taille humaine moyenne et un champ de vision vertical
-// typique de smartphone). Si cette vitesse de rapprochement dépasse un
-// seuil (5 km/h par défaut — au-delà de l'allure de marche normale), on
-// suppose qu'il s'agit d'un vélo plutôt que d'un piéton, et on l'indique
-// dans l'interface ("VÉLO ?"). C'est une hypothèse, pas une vraie
-// reconnaissance visuelle du vélo — d'où le "?".
+// v4 :
+//  - annonce vocale ("Piéton" / "Vélo") via SpeechSynthesis, qui sort par la
+//    sortie audio active du téléphone (écouteurs Bluetooth compris), en plus
+//    du bip et de la vibration — utile puisque l'écran n'est pas regardé ;
+//  - seuils abaissés (taille, vitesse de grossissement, ET vitesse de
+//    rapprochement estimée) pour alerter plus tôt ;
+//  - démarrage caméra plus robuste (attente des métadonnées vidéo + nouvel
+//    essai automatique) pour limiter le bug d'écran noir après une reprise
+//    depuis l'arrière-plan ;
+//  - icône de statut (pastille à côté du nom de l'appli) non animée quand le
+//    scan est en pause, animée quand il tourne.
 //
-// Optimisations batterie/chauffe (v2, conservées) :
-//  - détection sur une image réduite (petit canvas hors-écran) ;
-//  - cadence adaptative : lente en veille, rapide dès qu'une personne est suivie ;
-//  - caméra + boucle de détection coupées quand l'app passe en arrière-plan.
-//
-// Rappel : pas de mesure de distance réelle au sens strict — tout est
-// estimé à partir de l'image. À calibrer sur le terrain.
+// Rappel : pas de mesure de distance réelle au sens strict — tout est estimé
+// à partir de l'image (taille de la personne, vitesse de grossissement). À
+// calibrer sur le terrain.
 
 (() => {
   "use strict";
@@ -31,6 +29,7 @@
   const startBtn = document.getElementById("startBtn");
   const statePill = document.getElementById("statePill");
   const miniBlip = document.getElementById("miniBlip");
+  const brandDot = document.getElementById("brandDot");
 
   const metricObject = document.getElementById("metricObject");
   const metricSpeed = document.getElementById("metricSpeed");
@@ -51,20 +50,17 @@
   // ---------- canvas de détection hors-écran (basse résolution) ----------
   const detectCanvas = document.createElement("canvas");
   const detectCtx = detectCanvas.getContext("2d", { willReadFrequently: true });
-  const DETECT_MAX_DIM = 300; // suffisant pour lite_mobilenet_v2 (entrée 300x300)
+  const DETECT_MAX_DIM = 300;
   let dW = DETECT_MAX_DIM, dH = DETECT_MAX_DIM;
 
   // ---------- estimation de distance / vitesse ----------
-  // Modèle sténopé simplifié : on suppose une taille humaine moyenne et un
-  // champ de vision vertical typique de caméra arrière de smartphone.
-  // distance_m ≈ ASSUMED_HEIGHT_M / (2 * tan(VFOV/2) * (hauteur_boîte / hauteur_image))
   const ASSUMED_PERSON_HEIGHT_M = 1.65;
   const VERTICAL_FOV_DEG = 50;
   const DISTANCE_K = ASSUMED_PERSON_HEIGHT_M / (2 * Math.tan((VERTICAL_FOV_DEG * Math.PI / 180) / 2));
 
   const BIKE_SPEED_THRESHOLD_KMH = 5; // au-delà, on suppose un vélo plutôt qu'un piéton
   const MIN_SAMPLES_FOR_SPEED = 3;
-  const MIN_DT_FOR_SPEED_S = 0.4;
+  const MIN_DT_FOR_SPEED_S = 0.3;
 
   function estimateDistanceM(heightPct) {
     if (!heightPct || heightPct <= 0) return null;
@@ -74,44 +70,53 @@
   // ---------- état ----------
   let model = null;
   let stream = null;
-  let currentFacing = "environment"; // caméra arrière par défaut (portée dans le dos)
+  let currentFacing = "environment";
   let soundOn = true;
   let vibOn = "vibrate" in navigator;
   if (!vibOn) vibBtn.classList.add("muted");
+  const speechEnabled = "speechSynthesis" in window;
 
   let detectTimer = null;
   let alertTimer = null;
   let wakeLock = null;
-  let isRunning = false;   // l'utilisateur a démarré la détection
-  let isPaused = false;    // mis en pause car l'app est en arrière-plan
+  let isRunning = false;
+  let isPaused = false;
 
-  let history = []; // {t, h, cx, d} de la personne suivie
+  let history = []; // {t, h, cx, d}
   let lastSeen = 0;
   let currentLevel = "scan"; // scan | detecte | vigilance | alerte
-
   let currentIntervalMs = 0;
 
-  let sensitivity = Number(sensSlider.value); // seuil de hauteur % pour "vigilance"
+  let lastSpokenLabel = null;
+  let lastAnnounceTime = 0;
+  const ALERT_REPEAT_MS = 2500; // ré-annonce vocale toutes les 2,5s tant que l'alerte persiste
+
+  let sensitivity = Number(sensSlider.value);
   let minConfidence = Number(confSlider.value) / 100;
 
-  const HISTORY_WINDOW_MS = 1500;
+  const HISTORY_WINDOW_MS = 1200;
   const LOST_AFTER_MS = 700;
-  const ALERT_RATE = 20; // %/s de grossissement -> alerte
-  const VIGIL_RATE = 8;  // %/s de grossissement -> vigilance
 
-  const SCAN_INTERVAL_MS = 550;   // cadence lente : rien à surveiller
-  const ACTIVE_INTERVAL_MS = 150; // cadence rapide : une personne est suivie
+  // Seuils abaissés par rapport à la v3 pour alerter plus tôt, et vitesse de
+  // rapprochement ajoutée comme déclencheur indépendant de la taille de boîte.
+  const ALERT_RATE = 14;       // %/s de grossissement -> alerte (était 20)
+  const VIGIL_RATE = 6;        // %/s de grossissement -> vigilance (était 8)
+  const ALERT_SPEED_KMH = 14;  // rapprochement rapide -> alerte, même si encore loin
+  const VIGIL_SPEED_KMH = 6;   // rapprochement notable -> vigilance, même si encore loin
+
+  const SCAN_INTERVAL_MS = 550;
+  const ACTIVE_INTERVAL_MS = 150;
 
   let audioCtx = null;
 
-  // ---------- audio ----------
-  function beep(freq, durationMs, volume = 0.18) {
+  // ---------- audio : bip ----------
+  function beep(freq, durationMs, volume = 0.2) {
     if (!soundOn) return;
     try {
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
-      osc.type = "square";
+      osc.type = "sine"; // son plus doux qu'un buzzer carré, plus agréable au casque
       osc.frequency.value = freq;
       gain.gain.value = volume;
       osc.connect(gain).connect(audioCtx.destination);
@@ -119,6 +124,57 @@
       gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + durationMs / 1000);
       osc.stop(audioCtx.currentTime + durationMs / 1000);
     } catch (e) { /* audio non disponible, on ignore */ }
+  }
+
+  // ---------- audio : annonce vocale ----------
+  function speak(text) {
+    if (!soundOn || !speechEnabled) return;
+    try {
+      window.speechSynthesis.cancel(); // coupe une annonce précédente pas terminée
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = "fr-FR";
+      utter.rate = 1.05;
+      utter.volume = 1;
+      window.speechSynthesis.speak(utter);
+    } catch (e) { /* synthèse vocale indisponible, on ignore */ }
+  }
+
+  // annonce "Piéton" / "Vélo" dès l'entrée en vigilance/alerte, et répète
+  // tant que l'alerte persiste (toutes les ALERT_REPEAT_MS)
+  function maybeAnnounce(level, likelyBike) {
+    if (level !== "vigilance" && level !== "alerte") {
+      lastSpokenLabel = null;
+      return;
+    }
+    const label = likelyBike ? "Vélo" : "Piéton";
+    const now = performance.now();
+    const shouldRepeat = level === "alerte" && now - lastAnnounceTime > ALERT_REPEAT_MS;
+    if (label !== lastSpokenLabel || shouldRepeat) {
+      speak(label);
+      lastSpokenLabel = label;
+      lastAnnounceTime = now;
+    }
+  }
+
+  // déverrouille l'audio/la synthèse vocale pendant le geste utilisateur
+  // (obligatoire sur Android pour garantir la sortie, y compris Bluetooth)
+  function unlockAudio() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      const buffer = audioCtx.createBuffer(1, 1, 22050);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(audioCtx.destination);
+      src.start(0);
+    } catch (e) {}
+    if (speechEnabled) {
+      try {
+        const warm = new SpeechSynthesisUtterance(" ");
+        warm.volume = 0;
+        window.speechSynthesis.speak(warm);
+      } catch (e) {}
+    }
   }
 
   function vibrate(pattern) {
@@ -145,7 +201,28 @@
     }
     video.srcObject = stream;
     video.classList.toggle("rear", currentFacing === "environment");
-    await video.play();
+
+    // attendre les métadonnées avant de lire — limite l'écran noir parfois
+    // observé après une reprise depuis l'arrière-plan sur Android
+    await new Promise((resolve) => {
+      if (video.readyState >= 1) return resolve();
+      video.onloadedmetadata = () => resolve();
+      setTimeout(resolve, 1500); // filet de sécurité si l'événement ne vient pas
+    });
+
+    try {
+      await video.play();
+    } catch (e) {
+      await new Promise((r) => setTimeout(r, 250));
+      await video.play().catch(() => {});
+    }
+
+    // forcer un rafraîchissement d'affichage (contourne un bug connu de
+    // rendu figé/noir sur certains Android après redémarrage du flux)
+    video.style.display = "none";
+    void video.offsetHeight;
+    video.style.display = "";
+
     resizeOverlay();
     resizeDetectCanvas();
 
@@ -174,6 +251,17 @@
     dH = Math.round(video.videoHeight * scale);
     detectCanvas.width = dW;
     detectCanvas.height = dH;
+  }
+
+  // échantillonnage grossier pour détecter une image restée noire après reprise
+  function isFrameBlack() {
+    try {
+      detectCtx.drawImage(video, 0, 0, dW, dH);
+      const data = detectCtx.getImageData(0, 0, dW, dH).data;
+      let sum = 0, n = 0;
+      for (let i = 0; i < data.length; i += 41) { sum += data[i]; n++; }
+      return n > 0 && sum / n < 3;
+    } catch (e) { return false; }
   }
 
   window.addEventListener("resize", resizeOverlay);
@@ -211,7 +299,6 @@
     const now = performance.now();
 
     if (people.length > 0) {
-      // on suit la personne dont la boîte est la plus grande (la plus proche/pertinente)
       const target = people.reduce((a, b) => (b.bbox[3] > a.bbox[3] ? b : a));
       const heightPct = (target.bbox[3] / dH) * 100;
       const centerXPct = ((target.bbox[0] + target.bbox[2] / 2) / dW) * 100;
@@ -229,13 +316,15 @@
       updateMiniRadar(centerXPct, heightPct);
       drawOverlay(predictions, target, likelyBike, closingSpeedKmh);
 
-      const level = classify(heightPct, growthRate);
+      const level = classify(heightPct, growthRate, closingSpeedKmh);
       setLevel(level);
+      maybeAnnounce(level, likelyBike);
       setDetectionInterval(ACTIVE_INTERVAL_MS);
     } else {
       drawOverlay(predictions, null, false, null);
       if (now - lastSeen > LOST_AFTER_MS) {
         history = [];
+        lastSpokenLabel = null;
         updateHUD(null, null, null, false);
         updateMiniRadar(null, null);
         setLevel("scan");
@@ -250,7 +339,7 @@
     const last = history[history.length - 1];
     const dt = (last.t - first.t) / 1000;
     if (dt <= 0) return 0;
-    return (last.h - first.h) / dt; // %/s
+    return (last.h - first.h) / dt;
   }
 
   function computeClosingSpeedKmh() {
@@ -260,15 +349,17 @@
     if (first.d == null || last.d == null) return null;
     const dt = (last.t - first.t) / 1000;
     if (dt < MIN_DT_FOR_SPEED_S) return null;
-    const closingM = first.d - last.d; // positif si la distance diminue (approche)
-    return (closingM / dt) * 3.6; // m/s -> km/h
+    const closingM = first.d - last.d;
+    return (closingM / dt) * 3.6;
   }
 
-  function classify(heightPct, growthRate) {
-    const alerteHeight = Math.min(95, sensitivity * 1.7);
+  function classify(heightPct, growthRate, closingSpeedKmh) {
+    const alerteHeight = Math.min(95, sensitivity * 1.5); // était *1.7
     const vigilHeight = sensitivity;
-    if (heightPct >= alerteHeight || growthRate >= ALERT_RATE) return "alerte";
-    if (heightPct >= vigilHeight || growthRate >= VIGIL_RATE) return "vigilance";
+    const fastClosing = closingSpeedKmh != null && closingSpeedKmh >= ALERT_SPEED_KMH;
+    const closing = closingSpeedKmh != null && closingSpeedKmh >= VIGIL_SPEED_KMH;
+    if (heightPct >= alerteHeight || growthRate >= ALERT_RATE || fastClosing) return "alerte";
+    if (heightPct >= vigilHeight || growthRate >= VIGIL_RATE || closing) return "vigilance";
     return "detecte";
   }
 
@@ -295,9 +386,10 @@
       ctx.strokeRect(x, y, w, h);
 
       if (isPerson) {
-        const label = isTarget && likelyBike
-          ? `VÉLO ? ~${Math.round(closingSpeedKmh)} KM/H`
-          : "PERSONNE";
+        let label = "PERSONNE";
+        if (isTarget) {
+          label = likelyBike ? `VÉLO ? ~${Math.round(closingSpeedKmh)} KM/H` : "PIÉTON";
+        }
         ctx.font = "600 12px 'Space Mono', monospace";
         const textW = ctx.measureText(label).width + 10;
         ctx.fillStyle = isTarget ? levelColor(currentLevel) : "rgba(52,211,153,0.5)";
@@ -315,7 +407,7 @@
   }
 
   function updateHUD(cls, heightPct, closingSpeedKmh, likelyBike) {
-    metricObject.textContent = cls ? (likelyBike ? "VÉLO ?" : "PERSONNE") : "—";
+    metricObject.textContent = cls ? (likelyBike ? "VÉLO ?" : "PIÉTON") : "—";
     metricSpeed.textContent = closingSpeedKmh != null ? Math.round(closingSpeedKmh) + " km/h" : "—";
     metricProx.textContent = heightPct ? Math.round(heightPct) + "%" : "—";
   }
@@ -357,17 +449,26 @@
     clearInterval(alertTimer);
     if (level === "vigilance") {
       vibrate([60]);
-      alertTimer = setInterval(() => beep(760, 90), 600);
+      alertTimer = setInterval(() => beep(760, 110), 600);
     } else if (level === "alerte") {
       vibrate([90, 50, 90, 50, 90]);
-      alertTimer = setInterval(() => { beep(1050, 90); vibrate(70); }, 220);
+      alertTimer = setInterval(() => {
+        beep(1150, 70);
+        setTimeout(() => beep(850, 70), 100);
+        vibrate(70);
+      }, 260);
     }
   }
 
   // ---------- pause / reprise en arrière-plan ----------
+  function setScanIcon(active) {
+    brandDot.classList.toggle("paused", !active);
+  }
+
   async function pauseAll() {
     if (isPaused) return;
     isPaused = true;
+    setScanIcon(false);
     clearInterval(detectTimer);
     clearInterval(alertTimer);
     currentIntervalMs = 0;
@@ -381,7 +482,18 @@
     try {
       await startCamera();
       setDetectionInterval(SCAN_INTERVAL_MS);
-    } catch (e) { /* l'utilisateur devra relancer manuellement si ça échoue */ }
+      setScanIcon(true);
+      // filet de sécurité : si l'image revient noire malgré tout, on
+      // retente une fois automatiquement
+      setTimeout(async () => {
+        if (!isPaused && isFrameBlack()) {
+          try { await startCamera(); } catch (e) {}
+        }
+      }, 700);
+    } catch (e) {
+      isPaused = true;
+      setScanIcon(false);
+    }
   }
 
   document.addEventListener("visibilitychange", () => {
@@ -397,11 +509,13 @@
     gateError.textContent = "";
     startBtn.disabled = true;
     startBtn.textContent = "Initialisation…";
+    unlockAudio(); // dans le geste utilisateur, pour garantir le son (Bluetooth compris)
     try {
       await startCamera();
       if (!model) await loadModel();
       gate.classList.add("hidden");
       isRunning = true;
+      setScanIcon(true);
       statePill.dataset.level = "scan";
       statePill.textContent = "SCAN — RAS";
       setDetectionInterval(SCAN_INTERVAL_MS);
