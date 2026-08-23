@@ -51,7 +51,7 @@
         <circle cx="52" cy="52" r="3" fill="#34D399"/>
       </svg>
       <h1>ACTIVER LA DÉTECTION</h1>
-      <p>La caméra arrière observe derrière vous et signale l'approche d'un vélo. Le modèle se charge une seule fois puis fonctionne sur l'appareil, sans envoyer d'image.</p>
+      <p>La caméra arrière observe derrière vous et signale la présence d'une personne qui approche, à pied ou à vélo. Le modèle se charge une seule fois puis fonctionne sur l'appareil, sans envoyer d'image.</p>
       <button class="primary-btn" id="startBtn">Démarrer la caméra</button>
       <p class="gate-error" id="gateError"></p>
     </div>
@@ -77,7 +77,7 @@
       <span class="row-value" id="confValue">55%</span>
       <input type="range" id="confSlider" min="30" max="90" value="55">
     </label>
-    <p class="settings-note">La proximité est une estimation basée sur la taille du vélo dans l'image et sa vitesse de grossissement — pas une mesure de distance réelle. À calibrer sur le terrain selon la position du téléphone.</p>
+    <p class="settings-note">La détection cible toute personne (piéton ou cycliste) plutôt que le vélo lui-même, car un vélo vu de face n'est presque jamais reconnu comme tel. La proximité est une estimation basée sur la taille de la personne dans l'image et sa vitesse de grossissement — pas une mesure de distance réelle. À calibrer sur le terrain selon la position du téléphone.</p>
     <button class="primary-btn" id="closeSettings">Fermer</button>
   </div>
 

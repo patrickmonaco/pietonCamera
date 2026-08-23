@@ -1,7 +1,7 @@
 {
   "name": "Radar Piéton",
   "short_name": "RadarPiéton",
-  "description": "Détection de vélos approchant par l'arrière via la caméra, avec alerte progressive.",
+  "description": "Détection de personnes (piétons ou cyclistes) approchant par l'arrière via la caméra, avec alerte progressive.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

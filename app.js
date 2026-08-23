@@ -1,10 +1,23 @@
-// Radar Piéton — prototype de détection de vélo par caméra (COCO-SSD)
+// Radar Piéton — prototype de détection de présence humaine par caméra (COCO-SSD)
 //
-// Principe : pas de mesure de distance réelle, on estime la proximité à
-// partir de la taille de la boîte englobante du vélo dans l'image et de
-// sa vitesse de "grossissement" d'une frame à l'autre (comme un vélo qui
-// approche occupe une part croissante du champ de la caméra).
-// À calibrer sur le terrain — les seuils sont réglables dans les paramètres.
+// v2 : on suit la classe "person" plutôt que "bicycle". Un vélo vu de face ou
+// de trois-quarts n'est presque jamais reconnu comme "bicycle" par COCO-SSD
+// (la forme du vélo n'est visible que de profil), alors que le cycliste
+// lui-même reste détectable comme "person" sous quasiment tous les angles.
+// Ça couvre aussi les piétons — l'objectif est de détecter le plus tôt
+// possible toute présence humaine dans le dos, à pied ou à vélo.
+//
+// Optimisations batterie/chaleur :
+//  - la détection tourne sur une image réduite (petit canvas hors-écran),
+//    pas sur la vidéo pleine résolution ;
+//  - la cadence de détection est adaptative : lente en veille (rien détecté),
+//    rapide dès qu'une personne est suivie ;
+//  - tout s'arrête (caméra + boucle de détection) quand l'onglet/l'appli
+//    passe en arrière-plan, et reprend au retour.
+//
+// Comme avant : pas de mesure de distance réelle, juste un proxy à partir de
+// la taille de la boîte englobante et de sa vitesse de "grossissement".
+// À calibrer sur le terrain — seuils réglables dans les paramètres.
 
 (() => {
   "use strict";
@@ -36,6 +49,15 @@
   const confSlider = document.getElementById("confSlider");
   const confValue = document.getElementById("confValue");
 
+  // ---------- canvas de détection hors-écran (basse résolution) ----------
+  // On ne fait jamais tourner le modèle sur la vidéo pleine résolution :
+  // on la redessine réduite ici, ce qui limite le travail de lecture/
+  // redimensionnement de pixels à chaque détection.
+  const detectCanvas = document.createElement("canvas");
+  const detectCtx = detectCanvas.getContext("2d", { willReadFrequently: true });
+  const DETECT_MAX_DIM = 300; // suffisant pour lite_mobilenet_v2 (entrée 300x300)
+  let dW = DETECT_MAX_DIM, dH = DETECT_MAX_DIM;
+
   // ---------- état ----------
   let model = null;
   let stream = null;
@@ -47,10 +69,13 @@
   let detectTimer = null;
   let alertTimer = null;
   let wakeLock = null;
+  let isRunning = false;   // l'utilisateur a démarré la détection
+  let isPaused = false;    // mis en pause car l'app est en arrière-plan
 
-  let history = []; // {t, h, cx} du vélo suivi
+  let history = []; // {t, h, cx} de la personne suivie
   let lastSeen = 0;
   let currentLevel = "scan"; // scan | detecte | vigilance | alerte
+  let currentIntervalMs = 0;
 
   let sensitivity = Number(sensSlider.value); // seuil de hauteur % pour "vigilance"
   let minConfidence = Number(confSlider.value) / 100;
@@ -59,6 +84,9 @@
   const LOST_AFTER_MS = 700;
   const ALERT_RATE = 20; // %/s de grossissement -> alerte
   const VIGIL_RATE = 8;  // %/s de grossissement -> vigilance
+
+  const SCAN_INTERVAL_MS = 550;   // cadence lente : rien à surveiller
+  const ACTIVE_INTERVAL_MS = 150; // cadence rapide : une personne est suivie
 
   let audioCtx = null;
 
@@ -92,8 +120,11 @@
         audio: false,
         video: {
           facingMode: { ideal: currentFacing },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
+          // résolution modeste : moins de pixels à faire transiter dans le
+          // pipeline caméra -> moins de charge CPU/GPU et de chaleur.
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 15, max: 20 }
         }
       });
     } catch (err) {
@@ -104,6 +135,7 @@
     video.classList.toggle("rear", currentFacing === "environment");
     await video.play();
     resizeOverlay();
+    resizeDetectCanvas();
 
     try {
       if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen");
@@ -122,6 +154,16 @@
     overlay.width = rect.width;
     overlay.height = rect.height;
   }
+
+  function resizeDetectCanvas() {
+    if (!video.videoWidth) return;
+    const scale = DETECT_MAX_DIM / Math.max(video.videoWidth, video.videoHeight);
+    dW = Math.round(video.videoWidth * scale);
+    dH = Math.round(video.videoHeight * scale);
+    detectCanvas.width = dW;
+    detectCanvas.height = dH;
+  }
+
   window.addEventListener("resize", resizeOverlay);
   window.addEventListener("orientationchange", () => setTimeout(resizeOverlay, 300));
 
@@ -131,27 +173,39 @@
     model = await cocoSsd.load({ base: "lite_mobilenet_v2" });
   }
 
+  // ---------- cadence adaptative ----------
+  function setDetectionInterval(ms) {
+    if (ms === currentIntervalMs) return;
+    currentIntervalMs = ms;
+    clearInterval(detectTimer);
+    detectTimer = setInterval(detectLoop, ms);
+  }
+
   // ---------- boucle de détection ----------
   async function detectLoop() {
-    if (!model || video.readyState < 2) return;
+    if (!model || video.readyState < 2 || isPaused) return;
+
+    // image réduite pour la détection (voir détectCanvas plus haut)
+    detectCtx.drawImage(video, 0, 0, dW, dH);
+
     let predictions = [];
     try {
-      predictions = await model.detect(video, 10);
+      predictions = await model.detect(detectCanvas, 10);
     } catch (e) { return; }
 
-    const bikes = predictions.filter(
-      (p) => p.class === "bicycle" && p.score >= minConfidence
+    const people = predictions.filter(
+      (p) => p.class === "person" && p.score >= minConfidence
     );
 
-    drawOverlay(predictions, bikes);
+    drawOverlay(predictions);
 
     const now = performance.now();
 
-    if (bikes.length > 0) {
-      // on suit le vélo dont la boîte est la plus grande (le plus proche/pertinent)
-      const target = bikes.reduce((a, b) => (b.bbox[3] > a.bbox[3] ? b : a));
-      const heightPct = (target.bbox[3] / video.videoHeight) * 100;
-      const centerXPct = ((target.bbox[0] + target.bbox[2] / 2) / video.videoWidth) * 100;
+    if (people.length > 0) {
+      // on suit la personne dont la boîte est la plus grande (la plus proche/pertinente)
+      const target = people.reduce((a, b) => (b.bbox[3] > a.bbox[3] ? b : a));
+      const heightPct = (target.bbox[3] / dH) * 100;
+      const centerXPct = ((target.bbox[0] + target.bbox[2] / 2) / dW) * 100;
 
       history.push({ t: now, h: heightPct, cx: centerXPct });
       history = history.filter((p) => now - p.t <= HISTORY_WINDOW_MS);
@@ -160,12 +214,15 @@
       const growthRate = computeGrowthRate();
       updateHUD(target.class, target.score, heightPct);
       updateMiniRadar(centerXPct, heightPct);
-      setLevel(classify(heightPct, growthRate));
+      const level = classify(heightPct, growthRate);
+      setLevel(level);
+      setDetectionInterval(ACTIVE_INTERVAL_MS);
     } else if (now - lastSeen > LOST_AFTER_MS) {
       history = [];
       updateHUD(null, null, null);
       updateMiniRadar(null, null);
       setLevel("scan");
+      setDetectionInterval(SCAN_INTERVAL_MS);
     }
   }
 
@@ -187,25 +244,25 @@
   }
 
   // ---------- rendu ----------
-  function drawOverlay(all, bikes) {
+  function drawOverlay(all) {
     ctx.clearRect(0, 0, overlay.width, overlay.height);
-    const sx = overlay.width / video.videoWidth;
-    const sy = overlay.height / video.videoHeight;
+    const sx = overlay.width / dW;
+    const sy = overlay.height / dH;
     const mirrored = video.classList.contains("rear") === false;
 
     all.forEach((p) => {
-      const isBike = p.class === "bicycle" && p.score >= minConfidence;
-      if (!isBike && p.score < 0.5) return;
+      const isPerson = p.class === "person" && p.score >= minConfidence;
+      if (!isPerson && p.score < 0.5) return;
       let [x, y, w, h] = p.bbox;
       x *= sx; y *= sy; w *= sx; h *= sy;
       if (mirrored) x = overlay.width - x - w;
 
-      ctx.lineWidth = isBike ? 2.5 : 1;
-      ctx.strokeStyle = isBike ? levelColor(currentLevel) : "rgba(124,139,154,0.5)";
+      ctx.lineWidth = isPerson ? 2.5 : 1;
+      ctx.strokeStyle = isPerson ? levelColor(currentLevel) : "rgba(124,139,154,0.5)";
       ctx.strokeRect(x, y, w, h);
 
-      if (isBike) {
-        const label = `VÉLO ${Math.round(p.score * 100)}%`;
+      if (isPerson) {
+        const label = `PERSONNE ${Math.round(p.score * 100)}%`;
         ctx.font = "600 12px 'Space Mono', monospace";
         const textW = ctx.measureText(label).width + 10;
         ctx.fillStyle = levelColor(currentLevel);
@@ -223,7 +280,7 @@
   }
 
   function updateHUD(cls, score, heightPct) {
-    metricObject.textContent = cls ? "VÉLO" : "—";
+    metricObject.textContent = cls ? "PERSONNE" : "—";
     metricConf.textContent = score ? Math.round(score * 100) + "%" : "—";
     metricProx.textContent = heightPct ? Math.round(heightPct) + "%" : "—";
   }
@@ -255,9 +312,9 @@
     statePill.dataset.level = level;
     statePill.textContent = {
       scan: "SCAN — RAS",
-      detecte: "VÉLO DÉTECTÉ",
+      detecte: "PERSONNE DÉTECTÉE",
       vigilance: "VIGILANCE",
-      alerte: "ALERTE — VÉLO PROCHE"
+      alerte: "ALERTE — PERSONNE PROCHE"
     }[level];
 
     viewport.classList.remove("level-vigilance", "level-alerte");
@@ -274,6 +331,34 @@
     }
   }
 
+  // ---------- pause / reprise en arrière-plan ----------
+  async function pauseAll() {
+    if (isPaused) return;
+    isPaused = true;
+    clearInterval(detectTimer);
+    clearInterval(alertTimer);
+    currentIntervalMs = 0;
+    stopCamera();
+    if (wakeLock) { try { await wakeLock.release(); } catch (e) {} wakeLock = null; }
+  }
+
+  async function resumeAll() {
+    if (!isRunning || !isPaused) return;
+    isPaused = false;
+    try {
+      await startCamera();
+      setDetectionInterval(SCAN_INTERVAL_MS);
+    } catch (e) { /* l'utilisateur devra relancer manuellement si ça échoue */ }
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      pauseAll();
+    } else if (isRunning) {
+      resumeAll();
+    }
+  });
+
   // ---------- interactions ----------
   startBtn.addEventListener("click", async () => {
     gateError.textContent = "";
@@ -283,9 +368,10 @@
       await startCamera();
       if (!model) await loadModel();
       gate.classList.add("hidden");
+      isRunning = true;
       statePill.dataset.level = "scan";
       statePill.textContent = "SCAN — RAS";
-      detectTimer = setInterval(detectLoop, 180); // ~5-6 détections/s
+      setDetectionInterval(SCAN_INTERVAL_MS);
     } catch (e) {
       startBtn.disabled = false;
       startBtn.textContent = "Démarrer la caméra";
@@ -318,12 +404,6 @@
   confSlider.addEventListener("input", () => {
     minConfidence = Number(confSlider.value) / 100;
     confValue.textContent = confSlider.value + "%";
-  });
-
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && wakeLock === null && stream) {
-      navigator.wakeLock?.request("screen").then((wl) => (wakeLock = wl)).catch(() => {});
-    }
   });
 
   // ---------- enregistrement du service worker ----------
