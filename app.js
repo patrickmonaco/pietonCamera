@@ -94,6 +94,43 @@
   let sensitivity = Number(sensSlider.value);
   let minConfidence = Number(confSlider.value) / 100;
 
+  // ---------- persistance des réglages (localStorage) ----------
+  const SETTINGS_KEY = "radarPieton.settings";
+
+  function saveSettings() {
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ sensitivity, minConfidence, soundOn, vibOn }));
+    } catch (e) { /* stockage indisponible, on ignore */ }
+  }
+
+  function loadSettings() {
+    try {
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (typeof s.sensitivity === "number") {
+        sensitivity = s.sensitivity;
+        sensSlider.value = sensitivity;
+        sensValue.textContent = sensitivity + "%";
+      }
+      if (typeof s.minConfidence === "number") {
+        minConfidence = s.minConfidence;
+        confSlider.value = Math.round(minConfidence * 100);
+        confValue.textContent = confSlider.value + "%";
+      }
+      if (typeof s.soundOn === "boolean") {
+        soundOn = s.soundOn;
+        soundBtn.classList.toggle("active", soundOn);
+      }
+      if (typeof s.vibOn === "boolean" && "vibrate" in navigator) {
+        vibOn = s.vibOn;
+        vibBtn.classList.toggle("active", vibOn);
+      }
+    } catch (e) { /* réglages sauvegardés illisibles, on garde les valeurs par défaut */ }
+  }
+
+  loadSettings();
+
   const HISTORY_WINDOW_MS = 1200;
   const LOST_AFTER_MS = 700;
 
@@ -528,12 +565,14 @@
   soundBtn.addEventListener("click", () => {
     soundOn = !soundOn;
     soundBtn.classList.toggle("active", soundOn);
+    saveSettings();
   });
 
   vibBtn.addEventListener("click", () => {
     if (!("vibrate" in navigator)) return;
     vibOn = !vibOn;
     vibBtn.classList.toggle("active", vibOn);
+    saveSettings();
   });
 
   flipBtn.addEventListener("click", async () => {
@@ -547,10 +586,12 @@
   sensSlider.addEventListener("input", () => {
     sensitivity = Number(sensSlider.value);
     sensValue.textContent = sensitivity + "%";
+    saveSettings();
   });
   confSlider.addEventListener("input", () => {
     minConfidence = Number(confSlider.value) / 100;
     confValue.textContent = confSlider.value + "%";
+    saveSettings();
   });
 
   // ---------- enregistrement du service worker ----------

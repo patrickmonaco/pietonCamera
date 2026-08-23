@@ -2,7 +2,7 @@
 // tolérant aux coupures réseau. Le modèle COCO-SSD et TensorFlow.js sont
 // servis par le CDN et suivent leur propre cache HTTP (network first ici).
 
-const CACHE_NAME = "radar-pieton-shell-v4";
+const CACHE_NAME = "radar-pieton-shell-v5";
 const APP_SHELL = [
   "./",
   "./index.html",
