@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Radar Piéton</title>
+<meta name="theme-color" content="#0B0F14">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <header class="topbar">
+    <div class="brand"><span class="brand-dot"></span>RADAR PIÉTON</div>
+    <div class="state-pill" id="statePill">INIT…</div>
+  </header>
+
+  <main class="viewport" id="viewport">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="overlay"></canvas>
+    <div class="scanlines"></div>
+
+    <div class="mini-radar" id="miniRadar">
+      <svg viewBox="0 0 104 104">
+        <circle cx="52" cy="52" r="46" fill="none" stroke="#1E2733" stroke-width="1"/>
+        <circle cx="52" cy="52" r="30" fill="none" stroke="#1E2733" stroke-width="1"/>
+        <circle cx="52" cy="52" r="14" fill="none" stroke="#1E2733" stroke-width="1"/>
+        <line x1="6" y1="52" x2="98" y2="52" stroke="#1E2733" stroke-width="1"/>
+        <line x1="52" y1="6" x2="52" y2="98" stroke="#1E2733" stroke-width="1"/>
+        <g class="mini-sweep">
+          <path d="M52,52 L52,6 A46,46 0 0,1 84,20 Z" fill="url(#sweepGrad)"/>
+        </g>
+        <defs>
+          <linearGradient id="sweepGrad" x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0%" stop-color="#34D399" stop-opacity="0"/>
+            <stop offset="100%" stop-color="#34D399" stop-opacity="0.55"/>
+          </linearGradient>
+        </defs>
+        <circle id="miniBlip" class="mini-blip" cx="52" cy="52" r="4" fill="#F59E0B" opacity="0"/>
+      </svg>
+    </div>
+
+    <div class="gate" id="gate">
+      <svg class="gate-radar" viewBox="0 0 104 104">
+        <circle cx="52" cy="52" r="46" fill="none" stroke="#1E2733" stroke-width="1.5"/>
+        <circle cx="52" cy="52" r="30" fill="none" stroke="#1E2733" stroke-width="1.5"/>
+        <circle cx="52" cy="52" r="14" fill="none" stroke="#1E2733" stroke-width="1.5"/>
+        <circle cx="52" cy="52" r="3" fill="#34D399"/>
+      </svg>
+      <h1>ACTIVER LA DÉTECTION</h1>
+      <p>La caméra arrière observe derrière vous et signale l'approche d'un vélo. Le modèle se charge une seule fois puis fonctionne sur l'appareil, sans envoyer d'image.</p>
+      <button class="primary-btn" id="startBtn">Démarrer la caméra</button>
+      <p class="gate-error" id="gateError"></p>
+    </div>
+  </main>
+
+  <footer class="hud">
+    <div class="metric"><span class="metric-label">Objet</span><span class="metric-value" id="metricObject">—</span></div>
+    <div class="metric"><span class="metric-label">Confiance</span><span class="metric-value" id="metricConf">—</span></div>
+    <div class="metric"><span class="metric-label">Proxim.</span><span class="metric-value" id="metricProx">—</span></div>
+    <button class="icon-btn active" id="soundBtn" title="Son">♪</button>
+    <button class="icon-btn active" id="vibBtn" title="Vibration">▮▮</button>
+    <button class="icon-btn" id="flipBtn" title="Changer de caméra">⟲</button>
+    <button class="icon-btn" id="settingsBtn" title="Réglages">⚙</button>
+  </footer>
+
+  <div class="settings-drawer" id="settingsDrawer">
+    <h2>RÉGLAGES</h2>
+    <label>Seuil de vigilance (taille de la boîte, % de l'image)
+      <span class="row-value" id="sensValue">30%</span>
+      <input type="range" id="sensSlider" min="10" max="60" value="30">
+    </label>
+    <label>Confiance minimale de détection
+      <span class="row-value" id="confValue">55%</span>
+      <input type="range" id="confSlider" min="30" max="90" value="55">
+    </label>
+    <p class="settings-note">La proximité est une estimation basée sur la taille du vélo dans l'image et sa vitesse de grossissement — pas une mesure de distance réelle. À calibrer sur le terrain selon la position du téléphone.</p>
+    <button class="primary-btn" id="closeSettings">Fermer</button>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
