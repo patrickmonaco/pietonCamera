@@ -263,6 +263,57 @@ button{ font-family:inherit; }
   color:var(--text-dim);
   margin-bottom:18px;
 }
+.help-icon{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:16px;
+  height:16px;
+  margin-left:6px;
+  border-radius:50%;
+  border:1px solid var(--text-dim);
+  background:transparent;
+  color:var(--text-dim);
+  font-size:11px;
+  line-height:1;
+  vertical-align:middle;
+  cursor:pointer;
+  padding:0;
+}
+.help-icon i{ font-style:italic; }
+.help-icon:active{ background:var(--line); }
+
+.help-overlay{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,.55);
+  display:none;
+  align-items:center;
+  justify-content:center;
+  z-index:20;
+  padding:24px;
+}
+.help-overlay.open{ display:flex; }
+.help-modal{
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:20px;
+  max-width:360px;
+  width:100%;
+}
+.help-modal h3{
+  font-family:'Space Mono',monospace;
+  font-size:14px;
+  letter-spacing:.06em;
+  margin:0 0 12px;
+}
+.help-modal p{
+  font-size:13px;
+  color:var(--text-dim);
+  line-height:1.6;
+  margin:0 0 16px;
+}
 .settings-drawer input[type="range"]{
   width:100%;
   margin-top:8px;

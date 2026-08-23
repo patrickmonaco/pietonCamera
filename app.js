@@ -47,6 +47,11 @@
   const confSlider = document.getElementById("confSlider");
   const confValue = document.getElementById("confValue");
 
+  const helpOverlay = document.getElementById("helpOverlay");
+  const helpTitle = document.getElementById("helpTitle");
+  const helpText = document.getElementById("helpText");
+  const helpClose = document.getElementById("helpClose");
+
   // ---------- canvas de détection hors-écran (basse résolution) ----------
   const detectCanvas = document.createElement("canvas");
   const detectCtx = detectCanvas.getContext("2d", { willReadFrequently: true });
@@ -582,6 +587,32 @@
 
   settingsBtn.addEventListener("click", () => settingsDrawer.classList.add("open"));
   closeSettings.addEventListener("click", () => settingsDrawer.classList.remove("open"));
+
+  // ---------- popups d'aide sur les réglages ----------
+  const HELP_CONTENT = {
+    sens: {
+      title: "Seuil de vigilance",
+      text: "Ce curseur fixe la taille que doit atteindre une personne à l'écran (en % de la hauteur de l'image) pour que l'appli passe en VIGILANCE — c'est-à-dire qu'elle occupe une part croissante du champ de la caméra, donc qu'elle se rapproche. Le niveau ALERTE se déclenche ensuite vers 1,5 fois ce seuil. Une vitesse de rapprochement élevée ou un grossissement rapide de la silhouette peuvent aussi déclencher ces niveaux plus tôt, même si la taille n'a pas encore atteint le seuil. Seuil plus bas → alertes plus précoces mais potentiellement plus fréquentes ; seuil plus haut → alertes plus tardives mais plus sûres."
+    },
+    conf: {
+      title: "Confiance minimale de détection",
+      text: "Ce réglage fixe le seuil en dessous duquel une détection est ignorée. À chaque image, le modèle attribue à chaque silhouette repérée un score de probabilité qu'il s'agisse bien d'une personne (ex. 90% = quasi certain, 35% = incertain). Toute détection sous ce seuil est écartée : elle n'apparaît pas dans le suivi, ne déclenche pas d'alerte, ne compte pas dans le calcul de la vitesse de rapprochement. Seuil plus bas → détection plus tôt/plus loin, mais plus de fausses détections (ombres, buissons, poteaux). Seuil plus haut → moins de faux positifs, mais détection plus tardive."
+    }
+  };
+
+  document.querySelectorAll(".help-icon").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const content = HELP_CONTENT[btn.dataset.help];
+      if (!content) return;
+      helpTitle.textContent = content.title;
+      helpText.textContent = content.text;
+      helpOverlay.classList.add("open");
+    });
+  });
+  helpClose.addEventListener("click", () => helpOverlay.classList.remove("open"));
+  helpOverlay.addEventListener("click", (e) => {
+    if (e.target === helpOverlay) helpOverlay.classList.remove("open");
+  });
 
   sensSlider.addEventListener("input", () => {
     sensitivity = Number(sensSlider.value);
