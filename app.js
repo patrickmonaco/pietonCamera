@@ -1,23 +1,22 @@
 // Radar Piéton — prototype de détection de présence humaine par caméra (COCO-SSD)
 //
-// v2 : on suit la classe "person" plutôt que "bicycle". Un vélo vu de face ou
-// de trois-quarts n'est presque jamais reconnu comme "bicycle" par COCO-SSD
-// (la forme du vélo n'est visible que de profil), alors que le cycliste
-// lui-même reste détectable comme "person" sous quasiment tous les angles.
-// Ça couvre aussi les piétons — l'objectif est de détecter le plus tôt
-// possible toute présence humaine dans le dos, à pied ou à vélo.
+// v3 : on suit la classe "person" (v2) et on ajoute une estimation de
+// vitesse de rapprochement en km/h, à partir d'une distance approximative
+// déduite de la taille de la personne dans l'image (modèle sténopé, en
+// supposant une taille humaine moyenne et un champ de vision vertical
+// typique de smartphone). Si cette vitesse de rapprochement dépasse un
+// seuil (5 km/h par défaut — au-delà de l'allure de marche normale), on
+// suppose qu'il s'agit d'un vélo plutôt que d'un piéton, et on l'indique
+// dans l'interface ("VÉLO ?"). C'est une hypothèse, pas une vraie
+// reconnaissance visuelle du vélo — d'où le "?".
 //
-// Optimisations batterie/chaleur :
-//  - la détection tourne sur une image réduite (petit canvas hors-écran),
-//    pas sur la vidéo pleine résolution ;
-//  - la cadence de détection est adaptative : lente en veille (rien détecté),
-//    rapide dès qu'une personne est suivie ;
-//  - tout s'arrête (caméra + boucle de détection) quand l'onglet/l'appli
-//    passe en arrière-plan, et reprend au retour.
+// Optimisations batterie/chauffe (v2, conservées) :
+//  - détection sur une image réduite (petit canvas hors-écran) ;
+//  - cadence adaptative : lente en veille, rapide dès qu'une personne est suivie ;
+//  - caméra + boucle de détection coupées quand l'app passe en arrière-plan.
 //
-// Comme avant : pas de mesure de distance réelle, juste un proxy à partir de
-// la taille de la boîte englobante et de sa vitesse de "grossissement".
-// À calibrer sur le terrain — seuils réglables dans les paramètres.
+// Rappel : pas de mesure de distance réelle au sens strict — tout est
+// estimé à partir de l'image. À calibrer sur le terrain.
 
 (() => {
   "use strict";
@@ -34,7 +33,7 @@
   const miniBlip = document.getElementById("miniBlip");
 
   const metricObject = document.getElementById("metricObject");
-  const metricConf = document.getElementById("metricConf");
+  const metricSpeed = document.getElementById("metricSpeed");
   const metricProx = document.getElementById("metricProx");
 
   const soundBtn = document.getElementById("soundBtn");
@@ -50,13 +49,27 @@
   const confValue = document.getElementById("confValue");
 
   // ---------- canvas de détection hors-écran (basse résolution) ----------
-  // On ne fait jamais tourner le modèle sur la vidéo pleine résolution :
-  // on la redessine réduite ici, ce qui limite le travail de lecture/
-  // redimensionnement de pixels à chaque détection.
   const detectCanvas = document.createElement("canvas");
   const detectCtx = detectCanvas.getContext("2d", { willReadFrequently: true });
   const DETECT_MAX_DIM = 300; // suffisant pour lite_mobilenet_v2 (entrée 300x300)
   let dW = DETECT_MAX_DIM, dH = DETECT_MAX_DIM;
+
+  // ---------- estimation de distance / vitesse ----------
+  // Modèle sténopé simplifié : on suppose une taille humaine moyenne et un
+  // champ de vision vertical typique de caméra arrière de smartphone.
+  // distance_m ≈ ASSUMED_HEIGHT_M / (2 * tan(VFOV/2) * (hauteur_boîte / hauteur_image))
+  const ASSUMED_PERSON_HEIGHT_M = 1.65;
+  const VERTICAL_FOV_DEG = 50;
+  const DISTANCE_K = ASSUMED_PERSON_HEIGHT_M / (2 * Math.tan((VERTICAL_FOV_DEG * Math.PI / 180) / 2));
+
+  const BIKE_SPEED_THRESHOLD_KMH = 5; // au-delà, on suppose un vélo plutôt qu'un piéton
+  const MIN_SAMPLES_FOR_SPEED = 3;
+  const MIN_DT_FOR_SPEED_S = 0.4;
+
+  function estimateDistanceM(heightPct) {
+    if (!heightPct || heightPct <= 0) return null;
+    return (DISTANCE_K * 100) / heightPct;
+  }
 
   // ---------- état ----------
   let model = null;
@@ -72,9 +85,10 @@
   let isRunning = false;   // l'utilisateur a démarré la détection
   let isPaused = false;    // mis en pause car l'app est en arrière-plan
 
-  let history = []; // {t, h, cx} de la personne suivie
+  let history = []; // {t, h, cx, d} de la personne suivie
   let lastSeen = 0;
   let currentLevel = "scan"; // scan | detecte | vigilance | alerte
+
   let currentIntervalMs = 0;
 
   let sensitivity = Number(sensSlider.value); // seuil de hauteur % pour "vigilance"
@@ -120,8 +134,6 @@
         audio: false,
         video: {
           facingMode: { ideal: currentFacing },
-          // résolution modeste : moins de pixels à faire transiter dans le
-          // pipeline caméra -> moins de charge CPU/GPU et de chaleur.
           width: { ideal: 640 },
           height: { ideal: 480 },
           frameRate: { ideal: 15, max: 20 }
@@ -185,7 +197,6 @@
   async function detectLoop() {
     if (!model || video.readyState < 2 || isPaused) return;
 
-    // image réduite pour la détection (voir détectCanvas plus haut)
     detectCtx.drawImage(video, 0, 0, dW, dH);
 
     let predictions = [];
@@ -197,8 +208,6 @@
       (p) => p.class === "person" && p.score >= minConfidence
     );
 
-    drawOverlay(predictions);
-
     const now = performance.now();
 
     if (people.length > 0) {
@@ -206,23 +215,32 @@
       const target = people.reduce((a, b) => (b.bbox[3] > a.bbox[3] ? b : a));
       const heightPct = (target.bbox[3] / dH) * 100;
       const centerXPct = ((target.bbox[0] + target.bbox[2] / 2) / dW) * 100;
+      const distanceM = estimateDistanceM(heightPct);
 
-      history.push({ t: now, h: heightPct, cx: centerXPct });
+      history.push({ t: now, h: heightPct, cx: centerXPct, d: distanceM });
       history = history.filter((p) => now - p.t <= HISTORY_WINDOW_MS);
       lastSeen = now;
 
       const growthRate = computeGrowthRate();
-      updateHUD(target.class, target.score, heightPct);
+      const closingSpeedKmh = computeClosingSpeedKmh();
+      const likelyBike = closingSpeedKmh != null && closingSpeedKmh > BIKE_SPEED_THRESHOLD_KMH;
+
+      updateHUD(target.class, heightPct, closingSpeedKmh, likelyBike);
       updateMiniRadar(centerXPct, heightPct);
+      drawOverlay(predictions, target, likelyBike, closingSpeedKmh);
+
       const level = classify(heightPct, growthRate);
       setLevel(level);
       setDetectionInterval(ACTIVE_INTERVAL_MS);
-    } else if (now - lastSeen > LOST_AFTER_MS) {
-      history = [];
-      updateHUD(null, null, null);
-      updateMiniRadar(null, null);
-      setLevel("scan");
-      setDetectionInterval(SCAN_INTERVAL_MS);
+    } else {
+      drawOverlay(predictions, null, false, null);
+      if (now - lastSeen > LOST_AFTER_MS) {
+        history = [];
+        updateHUD(null, null, null, false);
+        updateMiniRadar(null, null);
+        setLevel("scan");
+        setDetectionInterval(SCAN_INTERVAL_MS);
+      }
     }
   }
 
@@ -235,6 +253,17 @@
     return (last.h - first.h) / dt; // %/s
   }
 
+  function computeClosingSpeedKmh() {
+    if (history.length < MIN_SAMPLES_FOR_SPEED) return null;
+    const first = history[0];
+    const last = history[history.length - 1];
+    if (first.d == null || last.d == null) return null;
+    const dt = (last.t - first.t) / 1000;
+    if (dt < MIN_DT_FOR_SPEED_S) return null;
+    const closingM = first.d - last.d; // positif si la distance diminue (approche)
+    return (closingM / dt) * 3.6; // m/s -> km/h
+  }
+
   function classify(heightPct, growthRate) {
     const alerteHeight = Math.min(95, sensitivity * 1.7);
     const vigilHeight = sensitivity;
@@ -244,7 +273,7 @@
   }
 
   // ---------- rendu ----------
-  function drawOverlay(all) {
+  function drawOverlay(all, target, likelyBike, closingSpeedKmh) {
     ctx.clearRect(0, 0, overlay.width, overlay.height);
     const sx = overlay.width / dW;
     const sy = overlay.height / dH;
@@ -253,19 +282,25 @@
     all.forEach((p) => {
       const isPerson = p.class === "person" && p.score >= minConfidence;
       if (!isPerson && p.score < 0.5) return;
+      const isTarget = p === target;
+
       let [x, y, w, h] = p.bbox;
       x *= sx; y *= sy; w *= sx; h *= sy;
       if (mirrored) x = overlay.width - x - w;
 
-      ctx.lineWidth = isPerson ? 2.5 : 1;
-      ctx.strokeStyle = isPerson ? levelColor(currentLevel) : "rgba(124,139,154,0.5)";
+      ctx.lineWidth = isPerson ? (isTarget ? 2.5 : 1.5) : 1;
+      ctx.strokeStyle = isPerson
+        ? (isTarget ? levelColor(currentLevel) : "rgba(52,211,153,0.5)")
+        : "rgba(124,139,154,0.5)";
       ctx.strokeRect(x, y, w, h);
 
       if (isPerson) {
-        const label = `PERSONNE ${Math.round(p.score * 100)}%`;
+        const label = isTarget && likelyBike
+          ? `VÉLO ? ~${Math.round(closingSpeedKmh)} KM/H`
+          : "PERSONNE";
         ctx.font = "600 12px 'Space Mono', monospace";
         const textW = ctx.measureText(label).width + 10;
-        ctx.fillStyle = levelColor(currentLevel);
+        ctx.fillStyle = isTarget ? levelColor(currentLevel) : "rgba(52,211,153,0.5)";
         ctx.fillRect(x, Math.max(0, y - 20), textW, 18);
         ctx.fillStyle = "#06251C";
         ctx.fillText(label, x + 5, Math.max(14, y - 6));
@@ -279,9 +314,9 @@
     return "#34D399";
   }
 
-  function updateHUD(cls, score, heightPct) {
-    metricObject.textContent = cls ? "PERSONNE" : "—";
-    metricConf.textContent = score ? Math.round(score * 100) + "%" : "—";
+  function updateHUD(cls, heightPct, closingSpeedKmh, likelyBike) {
+    metricObject.textContent = cls ? (likelyBike ? "VÉLO ?" : "PERSONNE") : "—";
+    metricSpeed.textContent = closingSpeedKmh != null ? Math.round(closingSpeedKmh) + " km/h" : "—";
     metricProx.textContent = heightPct ? Math.round(heightPct) + "%" : "—";
   }
 
@@ -290,10 +325,8 @@
       miniBlip.setAttribute("opacity", "0");
       return;
     }
-    // position angulaire selon la position horizontale dans l'image (-50°..50°)
     const angleDeg = (centerXPct / 100 - 0.5) * 100;
     const angleRad = (angleDeg - 90) * (Math.PI / 180);
-    // rayon inversement proportionnel à la proximité (plus gros = plus proche = plus près du centre)
     const proximity = Math.min(1, heightPct / 90);
     const radius = 44 - proximity * 34;
     const cx = 52 + radius * Math.cos(angleRad);
