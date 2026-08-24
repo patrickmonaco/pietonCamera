@@ -394,6 +394,18 @@ button{ font-family:inherit; }
   margin-top:8px;
   accent-color:var(--accent);
 }
+.settings-drawer select{
+  display:block;
+  width:100%;
+  margin-top:8px;
+  padding:9px 10px;
+  background:var(--panel-2);
+  border:1px solid var(--line);
+  border-radius:6px;
+  color:var(--text);
+  font-family:'Inter',system-ui,sans-serif;
+  font-size:13px;
+}
 .row-value{
   font-family:'Space Mono',monospace;
   color:var(--text);

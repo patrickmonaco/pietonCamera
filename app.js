@@ -39,6 +39,8 @@
   const vibToggle = document.getElementById("vibToggle");
   const darkModeToggle = document.getElementById("darkModeToggle");
   const darkStatus = document.getElementById("darkStatus");
+  const cameraSelectRow = document.getElementById("cameraSelectRow");
+  const cameraSelect = document.getElementById("cameraSelect");
   const flipBtn = document.getElementById("flipBtn");
   const settingsBtn = document.getElementById("settingsBtn");
   const settingsDrawer = document.getElementById("settingsDrawer");
@@ -82,6 +84,7 @@
   let vibOn = "vibrate" in navigator;
   if (!vibOn) vibToggle.disabled = true;
   let darkMode = false;
+  let selectedDeviceId = null; // objectif précis choisi (dépasse le simple facingMode)
   const speechEnabled = "speechSynthesis" in window;
 
   let detectTimer = null;
@@ -107,7 +110,7 @@
 
   function saveSettings() {
     try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ sensitivity, minConfidence, soundOn, vibOn, darkMode }));
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ sensitivity, minConfidence, soundOn, vibOn, darkMode, selectedDeviceId }));
     } catch (e) { /* stockage indisponible, on ignore */ }
   }
 
@@ -138,6 +141,9 @@
         darkMode = s.darkMode;
         darkModeToggle.checked = darkMode;
         viewport.classList.toggle("dark-active", darkMode);
+      }
+      if (typeof s.selectedDeviceId === "string") {
+        selectedDeviceId = s.selectedDeviceId;
       }
     } catch (e) { /* réglages sauvegardés illisibles, on garde les valeurs par défaut */ }
   }
@@ -235,16 +241,18 @@
   // ---------- caméra ----------
   async function startCamera() {
     stopCamera();
+    const videoConstraints = {
+      width: { ideal: 640 },
+      height: { ideal: 480 },
+      frameRate: { ideal: 15, max: 20 }
+    };
+    if (selectedDeviceId) {
+      videoConstraints.deviceId = { exact: selectedDeviceId }; // objectif précis choisi par l'utilisateur
+    } else {
+      videoConstraints.facingMode = { ideal: currentFacing };
+    }
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: { ideal: currentFacing },
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          frameRate: { ideal: 15, max: 20 }
-        }
-      });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints });
     } catch (err) {
       gateError.textContent = "Accès caméra refusé ou indisponible (" + err.message + "). Vérifiez les permissions et que la page est servie en HTTPS.";
       throw err;
@@ -286,6 +294,29 @@
       stream.getTracks().forEach((t) => t.stop());
       stream = null;
     }
+  }
+
+  // liste les objectifs disponibles (n'apparaît qu'après la première
+  // autorisation caméra, les labels étant vides tant que la permission
+  // n'a pas été accordée)
+  async function refreshCameraList() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter((d) => d.kind === "videoinput");
+      if (cams.length <= 1) {
+        cameraSelectRow.style.display = "none";
+        return;
+      }
+      cameraSelect.innerHTML = "";
+      cams.forEach((d, i) => {
+        const opt = document.createElement("option");
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Caméra ${i + 1}`;
+        cameraSelect.appendChild(opt);
+      });
+      if (selectedDeviceId) cameraSelect.value = selectedDeviceId;
+      cameraSelectRow.style.display = "";
+    } catch (e) { /* énumération indisponible, on garde le sélecteur masqué */ }
   }
 
   function resizeOverlay() {
@@ -536,6 +567,7 @@
       await startCamera();
       setDetectionInterval(SCAN_INTERVAL_MS);
       setScanIcon(true);
+      refreshCameraList();
       // filet de sécurité : si l'image revient noire malgré tout, on
       // retente une fois automatiquement
       setTimeout(async () => {
@@ -572,6 +604,7 @@
       statePill.dataset.level = "scan";
       statePill.textContent = "SCAN — RAS";
       setDetectionInterval(SCAN_INTERVAL_MS);
+      refreshCameraList();
     } catch (e) {
       startBtn.disabled = false;
       startBtn.textContent = "Démarrer la caméra";
@@ -597,8 +630,17 @@
   });
 
   flipBtn.addEventListener("click", async () => {
+    selectedDeviceId = null; // le bouton "changer de caméra" reprend la main sur l'objectif précis
+    cameraSelect.value = "";
+    saveSettings();
     currentFacing = currentFacing === "environment" ? "user" : "environment";
     await startCamera();
+  });
+
+  cameraSelect.addEventListener("change", async () => {
+    selectedDeviceId = cameraSelect.value || null;
+    saveSettings();
+    try { await startCamera(); } catch (e) {}
   });
 
   settingsBtn.addEventListener("click", () => settingsDrawer.classList.add("open"));
