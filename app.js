@@ -261,7 +261,14 @@
       throw err;
     }
     video.srcObject = stream;
-    video.classList.toggle("rear", currentFacing === "environment");
+
+    // détermine le sens du miroir à partir de ce que le pilote rapporte
+    // réellement (fiable même quand l'objectif est choisi via le menu
+    // déroulant, où currentFacing seul ne suffit plus à le savoir)
+    const activeTrack = stream.getVideoTracks()[0];
+    const trackSettings = activeTrack && activeTrack.getSettings ? activeTrack.getSettings() : {};
+    if (trackSettings.facingMode) currentFacing = trackSettings.facingMode;
+    video.classList.toggle("rear", currentFacing !== "user");
 
     // attendre les métadonnées avant de lire — limite l'écran noir parfois
     // observé après une reprise depuis l'arrière-plan sur Android
