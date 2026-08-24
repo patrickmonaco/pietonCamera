@@ -123,6 +123,29 @@ button{ font-family:inherit; }
   );
   mix-blend-mode:screen;
 }
+
+/* mode écran éteint : coupe l'aperçu caméra, ne garde qu'un statut texte */
+.viewport.dark-active #video,
+.viewport.dark-active #overlay,
+.viewport.dark-active .scanlines,
+.viewport.dark-active .mini-radar{
+  visibility:hidden;
+}
+.dark-status{
+  display:none;
+  position:absolute; inset:0;
+  z-index:5;
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+  padding:32px;
+  background:#000;
+  font-family:'Space Mono',monospace;
+  font-size:22px;
+  letter-spacing:.08em;
+  color:var(--accent);
+}
+.viewport.dark-active .dark-status{ display:flex; }
 .viewport.level-vigilance::after,
 .viewport.level-alerte::after{
   content:"";

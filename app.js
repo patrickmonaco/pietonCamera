@@ -37,6 +37,8 @@
 
   const soundToggle = document.getElementById("soundToggle");
   const vibToggle = document.getElementById("vibToggle");
+  const darkModeToggle = document.getElementById("darkModeToggle");
+  const darkStatus = document.getElementById("darkStatus");
   const flipBtn = document.getElementById("flipBtn");
   const settingsBtn = document.getElementById("settingsBtn");
   const settingsDrawer = document.getElementById("settingsDrawer");
@@ -79,6 +81,7 @@
   let soundOn = true;
   let vibOn = "vibrate" in navigator;
   if (!vibOn) vibToggle.disabled = true;
+  let darkMode = false;
   const speechEnabled = "speechSynthesis" in window;
 
   let detectTimer = null;
@@ -104,7 +107,7 @@
 
   function saveSettings() {
     try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ sensitivity, minConfidence, soundOn, vibOn }));
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ sensitivity, minConfidence, soundOn, vibOn, darkMode }));
     } catch (e) { /* stockage indisponible, on ignore */ }
   }
 
@@ -130,6 +133,11 @@
       if (typeof s.vibOn === "boolean" && "vibrate" in navigator) {
         vibOn = s.vibOn;
         vibToggle.checked = vibOn;
+      }
+      if (typeof s.darkMode === "boolean") {
+        darkMode = s.darkMode;
+        darkModeToggle.checked = darkMode;
+        viewport.classList.toggle("dark-active", darkMode);
       }
     } catch (e) { /* réglages sauvegardés illisibles, on garde les valeurs par défaut */ }
   }
@@ -407,6 +415,7 @@
 
   // ---------- rendu ----------
   function drawOverlay(all, target, likelyBike, closingSpeedKmh) {
+    if (darkMode) return; // rien à dessiner, l'aperçu est masqué : on économise le CPU/GPU
     ctx.clearRect(0, 0, overlay.width, overlay.height);
     const sx = overlay.width / dW;
     const sy = overlay.height / dH;
@@ -483,6 +492,8 @@
       vigilance: "VIGILANCE",
       alerte: "ALERTE — PERSONNE PROCHE"
     }[level];
+    darkStatus.textContent = statePill.textContent;
+    darkStatus.style.color = levelColor(level);
 
     viewport.classList.remove("level-vigilance", "level-alerte");
     if (level === "vigilance") viewport.classList.add("level-vigilance");
@@ -575,6 +586,13 @@
   vibToggle.addEventListener("change", () => {
     if (!("vibrate" in navigator)) return;
     vibOn = vibToggle.checked;
+    saveSettings();
+  });
+
+  darkModeToggle.addEventListener("change", () => {
+    darkMode = darkModeToggle.checked;
+    viewport.classList.toggle("dark-active", darkMode);
+    if (!darkMode) ctx.clearRect(0, 0, overlay.width, overlay.height);
     saveSettings();
   });
 
