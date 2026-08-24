@@ -41,6 +41,9 @@
   const darkStatus = document.getElementById("darkStatus");
   const cameraSelectRow = document.getElementById("cameraSelectRow");
   const cameraSelect = document.getElementById("cameraSelect");
+  const zoomRow = document.getElementById("zoomRow");
+  const zoomSlider = document.getElementById("zoomSlider");
+  const zoomValue = document.getElementById("zoomValue");
   const flipBtn = document.getElementById("flipBtn");
   const settingsBtn = document.getElementById("settingsBtn");
   const settingsDrawer = document.getElementById("settingsDrawer");
@@ -345,6 +348,33 @@
     } catch (e) { return false; }
   }
 
+  // teste si la piste vidéo expose un zoom sous 1.0 — sur les téléphones à
+  // "caméra logique", c'est parfois le seul moyen d'atteindre le capteur
+  // ultra grand-angle physique, faute d'exposition séparée dans enumerateDevices()
+  function refreshZoomControl() {
+    try {
+      const track = stream && stream.getVideoTracks()[0];
+      if (!track || !track.getCapabilities) { zoomRow.style.display = "none"; return; }
+      const caps = track.getCapabilities();
+      if (!caps.zoom || caps.zoom.min >= 1) { zoomRow.style.display = "none"; return; }
+      zoomSlider.min = caps.zoom.min;
+      zoomSlider.max = caps.zoom.max;
+      zoomSlider.step = caps.zoom.step || 0.1;
+      const settings = track.getSettings ? track.getSettings() : {};
+      const current = settings.zoom != null ? settings.zoom : caps.zoom.max;
+      zoomSlider.value = current;
+      zoomValue.textContent = Number(current).toFixed(2) + "x";
+      zoomRow.style.display = "";
+    } catch (e) { zoomRow.style.display = "none"; }
+  }
+
+  zoomSlider.addEventListener("input", async () => {
+    zoomValue.textContent = Number(zoomSlider.value).toFixed(2) + "x";
+    try {
+      const track = stream && stream.getVideoTracks()[0];
+      if (track) await track.applyConstraints({ advanced: [{ zoom: Number(zoomSlider.value) }] });
+    } catch (e) { /* contrainte de zoom refusée par le pilote, on ignore */ }
+  });
   window.addEventListener("resize", resizeOverlay);
   window.addEventListener("orientationchange", () => setTimeout(resizeOverlay, 300));
 
@@ -568,6 +598,7 @@
       setDetectionInterval(SCAN_INTERVAL_MS);
       setScanIcon(true);
       refreshCameraList();
+      refreshZoomControl();
       // filet de sécurité : si l'image revient noire malgré tout, on
       // retente une fois automatiquement
       setTimeout(async () => {
@@ -605,6 +636,7 @@
       statePill.textContent = "SCAN — RAS";
       setDetectionInterval(SCAN_INTERVAL_MS);
       refreshCameraList();
+      refreshZoomControl();
     } catch (e) {
       startBtn.disabled = false;
       startBtn.textContent = "Démarrer la caméra";
@@ -635,12 +667,13 @@
     saveSettings();
     currentFacing = currentFacing === "environment" ? "user" : "environment";
     await startCamera();
+    refreshZoomControl();
   });
 
   cameraSelect.addEventListener("change", async () => {
     selectedDeviceId = cameraSelect.value || null;
     saveSettings();
-    try { await startCamera(); } catch (e) {}
+    try { await startCamera(); refreshZoomControl(); } catch (e) {}
   });
 
   settingsBtn.addEventListener("click", () => settingsDrawer.classList.add("open"));
