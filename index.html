@@ -61,14 +61,20 @@
     <div class="metric"><span class="metric-label">Objet</span><span class="metric-value" id="metricObject">—</span></div>
     <div class="metric"><span class="metric-label">Vitesse approx.</span><span class="metric-value" id="metricSpeed">—</span></div>
     <div class="metric"><span class="metric-label">Proxim.</span><span class="metric-value" id="metricProx">—</span></div>
-    <button class="icon-btn active" id="soundBtn" title="Son">♪</button>
-    <button class="icon-btn active" id="vibBtn" title="Vibration">∿</button>
     <button class="icon-btn" id="flipBtn" title="Changer de caméra">⟲</button>
     <button class="icon-btn" id="settingsBtn" title="Réglages">⚙</button>
   </footer>
 
   <div class="settings-drawer" id="settingsDrawer">
     <h2>RÉGLAGES</h2>
+    <label class="toggle-row">
+      <span>Son (bips + annonces vocales)</span>
+      <span class="toggle-switch"><input type="checkbox" id="soundToggle" checked><span class="toggle-track"></span></span>
+    </label>
+    <label class="toggle-row">
+      <span>Vibration</span>
+      <span class="toggle-switch"><input type="checkbox" id="vibToggle" checked><span class="toggle-track"></span></span>
+    </label>
     <label>Seuil de vigilance (taille de la boîte, % de l'image)
       <button type="button" class="help-icon" data-help="sens" aria-label="Aide : seuil de vigilance"><i>i</i></button>
       <span class="row-value" id="sensValue">24%</span>

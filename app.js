@@ -35,8 +35,8 @@
   const metricSpeed = document.getElementById("metricSpeed");
   const metricProx = document.getElementById("metricProx");
 
-  const soundBtn = document.getElementById("soundBtn");
-  const vibBtn = document.getElementById("vibBtn");
+  const soundToggle = document.getElementById("soundToggle");
+  const vibToggle = document.getElementById("vibToggle");
   const flipBtn = document.getElementById("flipBtn");
   const settingsBtn = document.getElementById("settingsBtn");
   const settingsDrawer = document.getElementById("settingsDrawer");
@@ -78,7 +78,7 @@
   let currentFacing = "environment";
   let soundOn = true;
   let vibOn = "vibrate" in navigator;
-  if (!vibOn) vibBtn.classList.add("muted");
+  if (!vibOn) vibToggle.disabled = true;
   const speechEnabled = "speechSynthesis" in window;
 
   let detectTimer = null;
@@ -125,11 +125,11 @@
       }
       if (typeof s.soundOn === "boolean") {
         soundOn = s.soundOn;
-        soundBtn.classList.toggle("active", soundOn);
+        soundToggle.checked = soundOn;
       }
       if (typeof s.vibOn === "boolean" && "vibrate" in navigator) {
         vibOn = s.vibOn;
-        vibBtn.classList.toggle("active", vibOn);
+        vibToggle.checked = vibOn;
       }
     } catch (e) { /* réglages sauvegardés illisibles, on garde les valeurs par défaut */ }
   }
@@ -567,16 +567,14 @@
     }
   });
 
-  soundBtn.addEventListener("click", () => {
-    soundOn = !soundOn;
-    soundBtn.classList.toggle("active", soundOn);
+  soundToggle.addEventListener("change", () => {
+    soundOn = soundToggle.checked;
     saveSettings();
   });
 
-  vibBtn.addEventListener("click", () => {
+  vibToggle.addEventListener("change", () => {
     if (!("vibrate" in navigator)) return;
-    vibOn = !vibOn;
-    vibBtn.classList.toggle("active", vibOn);
+    vibOn = vibToggle.checked;
     saveSettings();
   });
 
@@ -628,7 +626,18 @@
   // ---------- enregistrement du service worker ----------
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js").catch(() => {});
+      navigator.serviceWorker.register("sw.js")
+        .then((reg) => reg.update().catch(() => {})) // vérifie une mise à jour à chaque chargement
+        .catch(() => {});
+    });
+
+    // dès qu'une nouvelle version prend le contrôle de la page, on recharge
+    // une seule fois pour afficher les fichiers fraîchement mis en cache
+    let reloadedForUpdate = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloadedForUpdate) return;
+      reloadedForUpdate = true;
+      window.location.reload();
     });
   }
 })();
