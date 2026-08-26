@@ -44,7 +44,6 @@
   const zoomRow = document.getElementById("zoomRow");
   const zoomSlider = document.getElementById("zoomSlider");
   const zoomValue = document.getElementById("zoomValue");
-  const flipBtn = document.getElementById("flipBtn");
   const settingsBtn = document.getElementById("settingsBtn");
   const settingsDrawer = document.getElementById("settingsDrawer");
   const closeSettings = document.getElementById("closeSettings");
@@ -72,7 +71,7 @@
 
   const BIKE_SPEED_THRESHOLD_KMH = 5; // au-delà, on suppose un vélo plutôt qu'un piéton
   const MIN_SAMPLES_FOR_SPEED = 3;
-  const MIN_DT_FOR_SPEED_S = 0.3;
+  const MIN_DT_FOR_SPEED_S = 0.2;
 
   function estimateDistanceM(heightPct) {
     if (!heightPct || heightPct <= 0) return null;
@@ -163,7 +162,7 @@
   const ALERT_SPEED_KMH = 14;  // rapprochement rapide -> alerte, même si encore loin
   const VIGIL_SPEED_KMH = 6;   // rapprochement notable -> vigilance, même si encore loin
 
-  const SCAN_INTERVAL_MS = 550;
+  const SCAN_INTERVAL_MS = 300;   // resserré (était 550) pour repérer plus tôt une approche rapide
   const ACTIVE_INTERVAL_MS = 150;
 
   let audioCtx = null;
@@ -666,15 +665,6 @@
     viewport.classList.toggle("dark-active", darkMode);
     if (!darkMode) ctx.clearRect(0, 0, overlay.width, overlay.height);
     saveSettings();
-  });
-
-  flipBtn.addEventListener("click", async () => {
-    selectedDeviceId = null; // le bouton "changer de caméra" reprend la main sur l'objectif précis
-    cameraSelect.value = "";
-    saveSettings();
-    currentFacing = currentFacing === "environment" ? "user" : "environment";
-    await startCamera();
-    refreshZoomControl();
   });
 
   cameraSelect.addEventListener("change", async () => {
