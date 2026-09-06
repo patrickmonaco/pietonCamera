@@ -19,7 +19,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "1.6";
+  const APP_VERSION = "1.7";
 
   // ---------- éléments DOM ----------
   const video = document.getElementById("video");
@@ -104,8 +104,9 @@
   let soundOn = true;
   let vibOn = "vibrate" in navigator;
   if (!vibOn) vibToggle.disabled = true;
-  let darkMode = false;
-  let alertPedestrians = true;
+  let darkMode = true;
+  let alertPedestrians = false;
+  viewport.classList.toggle("dark-active", darkMode); // applique le défaut dès le démarrage
   let bikeStickyThisTrack = false; // une fois reconnu vélo, le reste tant que le suivi continue
   let selectedDeviceId = null; // objectif précis choisi (dépasse le simple facingMode)
   const speechEnabled = "speechSynthesis" in window;
