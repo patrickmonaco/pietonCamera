@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "926582096479",
+    "project_id": "radarpieton",
+    "storage_bucket": "radarpieton.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:926582096479:android:65f778d3b0ada3ca2fd1ea",
+        "android_client_info": {
+          "package_name": "com.pietoncamera.radar"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA7wqRW1FUDGyBoRiQzNVYIFLY-xgFon4A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
