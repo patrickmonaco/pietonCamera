@@ -19,7 +19,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "1.9";
+  const APP_VERSION = "1.10";
 
   // ---------- éléments DOM ----------
   const video = document.getElementById("video");
@@ -336,10 +336,11 @@
       frameRate: { ideal: 15, max: 20 }
     };
     if (selectedDeviceId && !selectedDeviceId.startsWith("native:")) {
-      videoConstraints.deviceId = { ideal: selectedDeviceId }; // préférence, pas obligation —
-      // une caméra USB externe n'a pas toujours un identifiant stable d'un
-      // branchement à l'autre ; en exigence stricte ("exact"), un identifiant
-      // périmé bloque tout accès caméra au lieu de se rabattre sur une autre
+      // exigence stricte quand la caméra existe réellement (pas de dérive
+      // possible vers une autre caméra si les autres critères — résolution,
+      // fréquence — collent moins bien) ; le rattrapage en cas d'identifiant
+      // périmé se fait dans le bloc catch ci-dessous, pas ici
+      videoConstraints.deviceId = { exact: selectedDeviceId };
     } else {
       videoConstraints.facingMode = { ideal: currentFacing };
     }
