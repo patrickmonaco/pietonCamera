@@ -108,9 +108,12 @@ button{ font-family:inherit; }
      d'un écran de téléphone (16:9 large vs portrait étroit) */
   object-fit:contain;
   background:#000;
-  transform:scaleX(-1);
 }
-#video.rear{ transform:none; }
+/* effet miroir : appliqué par défaut à la caméra frontale (convention
+   "selfie"), et en option à la caméra arrière/externe pour une sensation
+   de rétroviseur — juste une transformation CSS, accélérée matériellement,
+   sans aucun coût de retraitement d'image */
+#video.mirror-on{ transform:scaleX(-1); }
 #nativePreviewCanvas{
   position:absolute;
   inset:0;

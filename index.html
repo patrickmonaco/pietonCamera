@@ -84,6 +84,10 @@
       <span>Mode écran éteint (audio seul)</span>
       <span class="toggle-switch"><input type="checkbox" id="darkModeToggle" checked><span class="toggle-track"></span></span>
     </label>
+    <label class="toggle-row">
+      <span>Effet miroir (vue rétroviseur)</span>
+      <span class="toggle-switch"><input type="checkbox" id="mirrorToggle" checked><span class="toggle-track"></span></span>
+    </label>
     <label id="cameraSelectRow" style="display:none">Objectif de la caméra
       <select id="cameraSelect"></select>
     </label>
@@ -111,7 +115,7 @@
     </label>
     <details class="settings-help">
       <summary>Aide et informations</summary>
-      <p class="settings-note">La détection cible toute personne (piéton ou cycliste) plutôt que le vélo lui-même, car un vélo vu de face n'est presque jamais reconnu comme tel. La proximité et la vitesse de rapprochement sont des estimations basées sur la taille de la personne dans l'image (en supposant une taille moyenne de 1,65 m et le champ de vision réel de l'objectif utilisé, standard ou grand-angle) — pas une mesure réelle. Au-delà de 5 km/h de rapprochement, l'appli suppose qu'il s'agit d'un vélo plutôt que d'un piéton, et l'annonce à voix haute ("Piéton" / "Vélo"). Si "Alerter aussi pour les piétons" est désactivé, seuls les vélos déclenchent un son/une vibration — les piétons restent affichés mais silencieux. Le son (bips + annonces vocales) sort par la sortie audio active — écouteurs Bluetooth compris. Important : l'écran doit rester allumé (ne pas verrouiller le téléphone) pour que la détection continue de tourner en poche/pochette. Le mode "écran éteint" coupe juste l'affichage de la caméra pour économiser la batterie (utile si vous ne regardez pas le téléphone) — l'écran doit quand même rester déverrouillé.</p>
+      <p class="settings-note">La détection cible toute personne (piéton ou cycliste) plutôt que le vélo lui-même, car un vélo vu de face n'est presque jamais reconnu comme tel. La proximité et la vitesse de rapprochement sont des estimations basées sur la taille de la personne dans l'image (en supposant une taille moyenne de 1,65 m et le champ de vision réel de l'objectif utilisé, standard ou grand-angle) — pas une mesure réelle. Au-delà de 5 km/h de rapprochement, l'appli suppose qu'il s'agit d'un vélo plutôt que d'un piéton, et l'annonce à voix haute ("Piéton" / "Vélo"). Si "Alerter aussi pour les piétons" est désactivé, seuls les vélos déclenchent un son/une vibration — les piétons restent affichés mais silencieux. Le son (bips + annonces vocales) sort par la sortie audio active — écouteurs Bluetooth compris. Important : l'écran doit rester allumé (ne pas verrouiller le téléphone) pour que la détection continue de tourner en poche/pochette. Le mode "écran éteint" coupe juste l'affichage de la caméra pour économiser la batterie (utile si vous ne regardez pas le téléphone) — l'écran doit quand même rester déverrouillé. L'effet miroir inverse l'affichage horizontalement (sensation de rétroviseur) — n'affecte que l'aperçu visuel, pas la détection.</p>
     </details>
     <button class="primary-btn" id="closeSettings">Fermer</button>
     <p class="app-version" id="appVersion"></p>

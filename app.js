@@ -19,7 +19,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "1.7";
+  const APP_VERSION = "1.8";
 
   // ---------- éléments DOM ----------
   const video = document.getElementById("video");
@@ -42,6 +42,7 @@
   const soundToggle = document.getElementById("soundToggle");
   const vibToggle = document.getElementById("vibToggle");
   const darkModeToggle = document.getElementById("darkModeToggle");
+  const mirrorToggle = document.getElementById("mirrorToggle");
   const alertPedestriansToggle = document.getElementById("alertPedestriansToggle");
   const darkStatus = document.getElementById("darkStatus");
   const cameraSelectRow = document.getElementById("cameraSelectRow");
@@ -106,8 +107,11 @@
   if (!vibOn) vibToggle.disabled = true;
   let darkMode = true;
   let alertPedestrians = false;
+  let mirrorEffect = true; // effet miroir "rétroviseur" pour la caméra arrière/externe
   viewport.classList.toggle("dark-active", darkMode); // applique le défaut dès le démarrage
   let bikeStickyThisTrack = false; // une fois reconnu vélo, le reste tant que le suivi continue
+  const LEVEL_RANK = { scan: 0, detecte: 1, vigilance: 2, alerte: 3 };
+  let peakLevelThisTrack = "scan"; // le niveau ne redescend plus tant que l'objet ne s'éloigne pas clairement
   let selectedDeviceId = null; // objectif précis choisi (dépasse le simple facingMode)
   const speechEnabled = "speechSynthesis" in window;
   // sur Android natif (Capacitor), la WebView système ne supporte pas
@@ -144,7 +148,7 @@
   function saveSettings() {
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-        sensitivity, minConfidence, soundOn, vibOn, darkMode, alertPedestrians, selectedDeviceId,
+        sensitivity, minConfidence, soundOn, vibOn, darkMode, alertPedestrians, mirrorEffect, selectedDeviceId,
         verticalFovStandardDeg, verticalFovWideDeg
       }));
     } catch (e) { /* stockage indisponible, on ignore */ }
@@ -181,6 +185,11 @@
       if (typeof s.alertPedestrians === "boolean") {
         alertPedestrians = s.alertPedestrians;
         alertPedestriansToggle.checked = alertPedestrians;
+      }
+      if (typeof s.mirrorEffect === "boolean") {
+        mirrorEffect = s.mirrorEffect;
+        mirrorToggle.checked = mirrorEffect;
+        updateMirrorState();
       }
       if (typeof s.selectedDeviceId === "string") {
         selectedDeviceId = s.selectedDeviceId;
@@ -306,6 +315,14 @@
     try { navigator.vibrate(pattern); } catch (e) {}
   }
 
+  // effet miroir : automatique pour la caméra frontale (convention selfie),
+  // optionnel pour la caméra arrière/externe (sensation de rétroviseur) —
+  // une seule transformation CSS, quasi gratuite (accélérée matériellement)
+  function updateMirrorState() {
+    const shouldMirror = currentFacing === "user" || mirrorEffect;
+    video.classList.toggle("mirror-on", shouldMirror);
+  }
+
   // ---------- caméra ----------
   async function startCamera() {
     stopCamera();
@@ -358,7 +375,7 @@
     const trackSettings = activeTrack && activeTrack.getSettings ? activeTrack.getSettings() : {};
     if (trackSettings.facingMode) currentFacing = trackSettings.facingMode;
 
-    video.classList.toggle("rear", currentFacing !== "user");
+    updateMirrorState();
 
     // attendre les métadonnées avant de lire — limite l'écran noir parfois
     // observé après une reprise depuis l'arrière-plan sur Android
@@ -621,7 +638,7 @@
       // détection, en proportion, produit une fausse vitesse de
       // rapprochement (cas observé : piéton statique classé "vélo" une
       // fois qu'on s'en est éloigné d'une vingtaine de mètres)
-      const MIN_HEIGHT_FOR_SPEED_TRUST = 10;
+      const MIN_HEIGHT_FOR_SPEED_TRUST = 13; // relevé (était 10) : encore quelques faux "vélo" résiduels sur piétons lointains
       const closingSpeedKmh = heightPct >= MIN_HEIGHT_FOR_SPEED_TRUST ? rawClosingSpeedKmh : null;
       const likelyBike = closingSpeedKmh != null && closingSpeedKmh > BIKE_SPEED_THRESHOLD_KMH;
       // une fois reconnu comme vélo pendant le suivi, reste "vélo" même si
@@ -633,9 +650,21 @@
 
       updateHUD(target.class, heightPct, closingSpeedKmh, effectiveLikelyBike);
       updateMiniRadar(centerXPct, heightPct);
-      drawOverlay(predictions, target, effectiveLikelyBike, closingSpeedKmh);
 
-      const level = classify(heightPct, growthRate, closingSpeedKmh, history.length);
+      const rawLevel = classify(heightPct, growthRate, closingSpeedKmh, history.length);
+      // le niveau ne redescend plus sur une simple mesure ponctuelle bruitée
+      // (ex. un pic de vitesse de rapprochement suivi d'une lecture plus
+      // faible en cours d'approche) — une fois vigilance/alerte atteint, il
+      // reste tant que l'objet n'est pas clairement en train de s'éloigner
+      const isClearlyReceding = growthRate <= RECEDE_RATE;
+      if (isClearlyReceding) {
+        peakLevelThisTrack = rawLevel;
+      } else if (LEVEL_RANK[rawLevel] > LEVEL_RANK[peakLevelThisTrack]) {
+        peakLevelThisTrack = rawLevel;
+      }
+      const level = peakLevelThisTrack;
+
+      drawOverlay(predictions, target, effectiveLikelyBike, closingSpeedKmh);
       setLevel(level, effectiveLikelyBike);
       maybeAnnounce(level, effectiveLikelyBike);
       setDetectionInterval(ACTIVE_INTERVAL_MS);
@@ -645,6 +674,7 @@
         history = [];
         lastSpokenLabel = null;
         bikeStickyThisTrack = false;
+        peakLevelThisTrack = "scan";
         updateHUD(null, null, null, false);
         updateMiniRadar(null, null);
         setLevel("scan", false);
@@ -704,7 +734,7 @@
     // dessine plus que les boîtes de détection, par-dessus
     const sx = overlay.width / dW;
     const sy = overlay.height / dH;
-    const mirrored = !nativeWideActive && video.classList.contains("rear") === false;
+    const mirrored = video.classList.contains("mirror-on");
 
     all.forEach((p) => {
       const isPerson = p.class === "person" && p.score >= minConfidence;
@@ -908,6 +938,12 @@
 
   alertPedestriansToggle.addEventListener("change", () => {
     alertPedestrians = alertPedestriansToggle.checked;
+    saveSettings();
+  });
+
+  mirrorToggle.addEventListener("change", () => {
+    mirrorEffect = mirrorToggle.checked;
+    updateMirrorState();
     saveSettings();
   });
 
