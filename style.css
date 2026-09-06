@@ -102,10 +102,22 @@ button{ font-family:inherit; }
   inset:0;
   width:100%;
   height:100%;
-  object-fit:cover;
+  /* "contain" plutôt que "cover" : garantit que le champ de vision complet
+     reste visible (bandes noires éventuelles) plutôt que de recadrer les
+     côtés — important pour une caméra externe au format très différent
+     d'un écran de téléphone (16:9 large vs portrait étroit) */
+  object-fit:contain;
+  background:#000;
   transform:scaleX(-1);
 }
 #video.rear{ transform:none; }
+#nativePreviewCanvas{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  display:none;
+}
 #overlay{
   position:absolute;
   inset:0;
@@ -126,6 +138,7 @@ button{ font-family:inherit; }
 
 /* mode écran éteint : coupe l'aperçu caméra, ne garde qu'un statut texte */
 .viewport.dark-active #video,
+.viewport.dark-active #nativePreviewCanvas,
 .viewport.dark-active #overlay,
 .viewport.dark-active .scanlines,
 .viewport.dark-active .mini-radar{
@@ -394,7 +407,8 @@ button{ font-family:inherit; }
   margin-top:8px;
   accent-color:var(--accent);
 }
-.settings-drawer select{
+.settings-drawer select,
+.settings-drawer input[type="number"]{
   display:block;
   width:100%;
   margin-top:8px;
@@ -422,6 +436,14 @@ button{ font-family:inherit; }
   color:var(--text-dim);
   line-height:1.6;
   margin-top:4px;
+}
+.app-version{
+  font-family:'Space Mono',monospace;
+  font-size:10px;
+  color:var(--text-dim);
+  opacity:.5;
+  text-align:center;
+  margin-top:14px;
 }
 
 @media (min-width:640px){

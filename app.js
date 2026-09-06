@@ -19,9 +19,13 @@
 (() => {
   "use strict";
 
+  const APP_VERSION = "1.6";
+
   // ---------- éléments DOM ----------
   const video = document.getElementById("video");
   const overlay = document.getElementById("overlay");
+  const nativePreviewCanvas = document.getElementById("nativePreviewCanvas");
+  const nativePreviewCtx = nativePreviewCanvas.getContext("2d");
   const ctx = overlay.getContext("2d");
   const viewport = document.getElementById("viewport");
   const gate = document.getElementById("gate");
@@ -38,6 +42,7 @@
   const soundToggle = document.getElementById("soundToggle");
   const vibToggle = document.getElementById("vibToggle");
   const darkModeToggle = document.getElementById("darkModeToggle");
+  const alertPedestriansToggle = document.getElementById("alertPedestriansToggle");
   const darkStatus = document.getElementById("darkStatus");
   const cameraSelectRow = document.getElementById("cameraSelectRow");
   const cameraSelect = document.getElementById("cameraSelect");
@@ -47,11 +52,15 @@
   const settingsBtn = document.getElementById("settingsBtn");
   const settingsDrawer = document.getElementById("settingsDrawer");
   const closeSettings = document.getElementById("closeSettings");
+  const appVersionEl = document.getElementById("appVersion");
+  appVersionEl.textContent = "v" + APP_VERSION;
 
   const sensSlider = document.getElementById("sensSlider");
   const sensValue = document.getElementById("sensValue");
   const confSlider = document.getElementById("confSlider");
   const confValue = document.getElementById("confValue");
+  const fovStandardInput = document.getElementById("fovStandardInput");
+  const fovWideInput = document.getElementById("fovWideInput");
 
   const helpOverlay = document.getElementById("helpOverlay");
   const helpTitle = document.getElementById("helpTitle");
@@ -66,16 +75,26 @@
 
   // ---------- estimation de distance / vitesse ----------
   const ASSUMED_PERSON_HEIGHT_M = 1.65;
-  const VERTICAL_FOV_DEG = 50;
-  const DISTANCE_K = ASSUMED_PERSON_HEIGHT_M / (2 * Math.tan((VERTICAL_FOV_DEG * Math.PI / 180) / 2));
+  // FOV vertical mesuré via Camera2 pour chaque objectif — réglable dans les
+  // paramètres (pas seulement une constante figée dans le code) pour
+  // permettre une recalibration terrain, ou lors d'un changement de
+  // téléphone, sans avoir à recompiler l'appli native
+  let verticalFovStandardDeg = 55.6; // objectif principal
+  let verticalFovWideDeg = 79.0;     // objectif ultra grand-angle natif
 
   const BIKE_SPEED_THRESHOLD_KMH = 5; // au-delà, on suppose un vélo plutôt qu'un piéton
   const MIN_SAMPLES_FOR_SPEED = 3;
-  const MIN_DT_FOR_SPEED_S = 0.2;
+  const MIN_DT_FOR_SPEED_S = 0.15;
+
+  function currentVerticalFovDeg() {
+    return nativeWideActive ? verticalFovWideDeg : verticalFovStandardDeg;
+  }
 
   function estimateDistanceM(heightPct) {
     if (!heightPct || heightPct <= 0) return null;
-    return (DISTANCE_K * 100) / heightPct;
+    const fovRad = (currentVerticalFovDeg() * Math.PI / 180);
+    const k = ASSUMED_PERSON_HEIGHT_M / (2 * Math.tan(fovRad / 2));
+    return (k * 100) / heightPct;
   }
 
   // ---------- état ----------
@@ -86,8 +105,19 @@
   let vibOn = "vibrate" in navigator;
   if (!vibOn) vibToggle.disabled = true;
   let darkMode = false;
+  let alertPedestrians = true;
+  let bikeStickyThisTrack = false; // une fois reconnu vélo, le reste tant que le suivi continue
   let selectedDeviceId = null; // objectif précis choisi (dépasse le simple facingMode)
   const speechEnabled = "speechSynthesis" in window;
+  // sur Android natif (Capacitor), la WebView système ne supporte pas
+  // fiablement SpeechSynthesis — on utilise le plugin natif TextToSpeech
+  // s'il est présent (voir vendor/capacitor-tts.js), sinon l'API navigateur
+  // vérifié à chaque appel plutôt qu'une seule fois au chargement : le pont
+  // Capacitor peut finir son initialisation après ce point du script
+  function getNativeTTS() {
+    return window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()
+      && window.Capacitor.Plugins && window.Capacitor.Plugins.TextToSpeech;
+  }
 
   let detectTimer = null;
   let alertTimer = null;
@@ -112,7 +142,10 @@
 
   function saveSettings() {
     try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ sensitivity, minConfidence, soundOn, vibOn, darkMode, selectedDeviceId }));
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+        sensitivity, minConfidence, soundOn, vibOn, darkMode, alertPedestrians, selectedDeviceId,
+        verticalFovStandardDeg, verticalFovWideDeg
+      }));
     } catch (e) { /* stockage indisponible, on ignore */ }
   }
 
@@ -144,8 +177,20 @@
         darkModeToggle.checked = darkMode;
         viewport.classList.toggle("dark-active", darkMode);
       }
+      if (typeof s.alertPedestrians === "boolean") {
+        alertPedestrians = s.alertPedestrians;
+        alertPedestriansToggle.checked = alertPedestrians;
+      }
       if (typeof s.selectedDeviceId === "string") {
         selectedDeviceId = s.selectedDeviceId;
+      }
+      if (typeof s.verticalFovStandardDeg === "number") {
+        verticalFovStandardDeg = s.verticalFovStandardDeg;
+        fovStandardInput.value = verticalFovStandardDeg;
+      }
+      if (typeof s.verticalFovWideDeg === "number") {
+        verticalFovWideDeg = s.verticalFovWideDeg;
+        fovWideInput.value = verticalFovWideDeg;
       }
     } catch (e) { /* réglages sauvegardés illisibles, on garde les valeurs par défaut */ }
   }
@@ -160,10 +205,10 @@
   const ALERT_RATE = 14;       // %/s de grossissement -> alerte (était 20)
   const VIGIL_RATE = 6;        // %/s de grossissement -> vigilance (était 8)
   const ALERT_SPEED_KMH = 14;  // rapprochement rapide -> alerte, même si encore loin
-  const VIGIL_SPEED_KMH = 6;   // rapprochement notable -> vigilance, même si encore loin
+  const VIGIL_SPEED_KMH = 5;   // rapprochement notable -> vigilance, même si encore loin (aligné sur le seuil vélo)
 
-  const SCAN_INTERVAL_MS = 300;   // resserré (était 550) pour repérer plus tôt une approche rapide
-  const ACTIVE_INTERVAL_MS = 150;
+  const SCAN_INTERVAL_MS = 400;   // priorité batterie (était 250) — la marge de détection reste suffisante
+  const ACTIVE_INTERVAL_MS = 200; // priorité batterie (était 135)
 
   let audioCtx = null;
 
@@ -186,7 +231,23 @@
 
   // ---------- audio : annonce vocale ----------
   function speak(text) {
-    if (!soundOn || !speechEnabled) return;
+    if (!soundOn) return;
+    if (getNativeTTS()) {
+      // plugin natif (Android natif via Capacitor) — la WebView système
+      // ne supporte pas fiablement l'API SpeechSynthesis du navigateur
+      try {
+        window.Capacitor.Plugins.TextToSpeech.speak({
+          text: text,
+          lang: "fr-FR",
+          rate: 1.05,
+          volume: 1.0
+        }).catch((err) => {
+          console.error("[TTS] échec de la synthèse vocale native —", err);
+        });
+      } catch (e) { console.error("[TTS] exception synchrone —", e); }
+      return;
+    }
+    if (!speechEnabled) return;
     try {
       window.speechSynthesis.cancel(); // coupe une annonce précédente pas terminée
       const utter = new SpeechSynthesisUtterance(text);
@@ -202,6 +263,10 @@
   function maybeAnnounce(level, likelyBike) {
     if (level !== "vigilance" && level !== "alerte") {
       lastSpokenLabel = null;
+      return;
+    }
+    if (!likelyBike && !alertPedestrians) {
+      lastSpokenLabel = null; // piétons désactivés : rien à annoncer pour celui-ci
       return;
     }
     const label = likelyBike ? "Vélo" : "Piéton";
@@ -226,7 +291,7 @@
       src.connect(audioCtx.destination);
       src.start(0);
     } catch (e) {}
-    if (speechEnabled) {
+    if (speechEnabled && !getNativeTTS()) {
       try {
         const warm = new SpeechSynthesisUtterance(" ");
         warm.volume = 0;
@@ -244,20 +309,44 @@
   async function startCamera() {
     stopCamera();
     const videoConstraints = {
-      width: { ideal: 640 },
-      height: { ideal: 480 },
+      // diagnostic fait : le recadrage n'était pas en cause (resizeMode
+      // "none" confirmé même à basse résolution) — la vraie cause était
+      // l'affichage (CSS object-fit, corrigé séparément). On revient à une
+      // résolution plus légère, sans bénéfice à décoder du 1080p en continu.
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
       frameRate: { ideal: 15, max: 20 }
     };
-    if (selectedDeviceId) {
-      videoConstraints.deviceId = { exact: selectedDeviceId }; // objectif précis choisi par l'utilisateur
+    if (selectedDeviceId && !selectedDeviceId.startsWith("native:")) {
+      videoConstraints.deviceId = { ideal: selectedDeviceId }; // préférence, pas obligation —
+      // une caméra USB externe n'a pas toujours un identifiant stable d'un
+      // branchement à l'autre ; en exigence stricte ("exact"), un identifiant
+      // périmé bloque tout accès caméra au lieu de se rabattre sur une autre
     } else {
       videoConstraints.facingMode = { ideal: currentFacing };
     }
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints });
     } catch (err) {
-      gateError.textContent = "Accès caméra refusé ou indisponible (" + err.message + "). Vérifiez les permissions et que la page est servie en HTTPS.";
-      throw err;
+      // filet de sécurité : si même la préférence pose souci (cas rare),
+      // on retente une fois avec les réglages par défaut plutôt que de
+      // rester bloqué durablement sur un choix de caméra devenu invalide
+      if (selectedDeviceId && !selectedDeviceId.startsWith("native:")) {
+        try {
+          selectedDeviceId = null;
+          saveSettings();
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 15, max: 20 }, facingMode: { ideal: currentFacing } }
+          });
+        } catch (err2) {
+          gateError.textContent = "Accès caméra refusé ou indisponible [" + err2.name + "] " + err2.message + ". Vérifiez les permissions et que la page est servie en HTTPS.";
+          throw err2;
+        }
+      } else {
+        gateError.textContent = "Accès caméra refusé ou indisponible [" + err.name + "] " + err.message + ". Vérifiez les permissions et que la page est servie en HTTPS.";
+        throw err;
+      }
     }
     video.srcObject = stream;
 
@@ -267,6 +356,7 @@
     const activeTrack = stream.getVideoTracks()[0];
     const trackSettings = activeTrack && activeTrack.getSettings ? activeTrack.getSettings() : {};
     if (trackSettings.facingMode) currentFacing = trackSettings.facingMode;
+
     video.classList.toggle("rear", currentFacing !== "user");
 
     // attendre les métadonnées avant de lire — limite l'écran noir parfois
@@ -307,31 +397,122 @@
 
   // liste les objectifs disponibles (n'apparaît qu'après la première
   // autorisation caméra, les labels étant vides tant que la permission
-  // n'a pas été accordée)
+  // n'a pas été accordée) + l'objectif ultra grand-angle natif si présent
   async function refreshCameraList() {
+    cameraSelect.innerHTML = "";
+    let optionCount = 0;
+
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const cams = devices.filter((d) => d.kind === "videoinput");
-      if (cams.length <= 1) {
-        cameraSelectRow.style.display = "none";
-        return;
-      }
-      cameraSelect.innerHTML = "";
       cams.forEach((d, i) => {
         const opt = document.createElement("option");
         opt.value = d.deviceId;
         opt.textContent = d.label || `Caméra ${i + 1}`;
         cameraSelect.appendChild(opt);
+        optionCount++;
       });
-      if (selectedDeviceId) cameraSelect.value = selectedDeviceId;
-      cameraSelectRow.style.display = "";
-    } catch (e) { /* énumération indisponible, on garde le sélecteur masqué */ }
+    } catch (e) { /* énumération indisponible, on ignore */ }
+
+    try {
+      const nativeWide = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.WideCamera;
+      if (nativeWide) {
+        const result = await nativeWide.listPhysicalCameras();
+        (result.cameras || []).forEach((cam) => {
+          if (!cam.isLogicalMultiCamera || !cam.physicalCameras || cam.physicalCameras.length < 2) return;
+          // l'objectif à la focale la plus courte = le plus grand angle
+          const widest = cam.physicalCameras.reduce((a, b) => (b.focalLengthMm < a.focalLengthMm ? b : a));
+          const opt = document.createElement("option");
+          opt.value = `native:${cam.logicalId}:${widest.physicalId}`;
+          opt.textContent = "Ultra grand-angle (natif)";
+          cameraSelect.appendChild(opt);
+          optionCount++;
+        });
+      }
+    } catch (e) { /* plugin natif indisponible, on ignore */ }
+
+    if (optionCount <= 1) {
+      cameraSelectRow.style.display = "none";
+      return;
+    }
+    if (selectedDeviceId) cameraSelect.value = selectedDeviceId;
+    cameraSelectRow.style.display = "";
+  }
+
+  // ---------- objectif ultra grand-angle natif (Camera2) ----------
+  let nativeWideActive = false;
+  let nativeFrameReady = false;
+  const nativeImg = new Image();
+  let nativeFrameListener = null;
+
+  // dessine une image en préservant ses proportions (équivalent manuel de
+  // CSS object-fit:cover) — recadre plutôt que d'étirer, pour éviter que
+  // les objets détectés apparaissent écrasés/déformés si le ratio de
+  // l'image source ne correspond pas exactement à celui du canvas cible
+  function drawImageCover(context, img, dWidth, dHeight) {
+    const imgRatio = img.naturalWidth / img.naturalHeight;
+    const targetRatio = dWidth / dHeight;
+    let sx, sy, sw, sh;
+    if (imgRatio > targetRatio) {
+      sh = img.naturalHeight;
+      sw = sh * targetRatio;
+      sx = (img.naturalWidth - sw) / 2;
+      sy = 0;
+    } else {
+      sw = img.naturalWidth;
+      sh = sw / targetRatio;
+      sx = 0;
+      sy = (img.naturalHeight - sh) / 2;
+    }
+    context.drawImage(img, sx, sy, sw, sh, 0, 0, dWidth, dHeight);
+  }
+
+  function handleNativeFrame(data) {
+    nativeImg.onload = () => {
+      // aperçu visuel : redessiné immédiatement à chaque frame reçue,
+      // indépendamment du rythme de la boucle de détection IA — c'est ce
+      // découplage qui manquait et causait le saccadé
+      drawImageCover(nativePreviewCtx, nativeImg, nativePreviewCanvas.width, nativePreviewCanvas.height);
+      // image pour la détection IA : mise à jour au même rythme, consommée
+      // seulement quand detectLoop tourne (cadence plus lente, volontaire)
+      drawImageCover(detectCtx, nativeImg, dW, dH);
+      nativeFrameReady = true;
+    };
+    nativeImg.src = data.image;
+  }
+
+  async function startNativeWideCamera(logicalId, physicalId) {
+    stopCamera(); // coupe le flux getUserMedia s'il tournait
+    video.style.visibility = "hidden"; // le flux natif est dessiné sur son propre canvas
+    dW = 320; dH = 240;
+    detectCanvas.width = dW; detectCanvas.height = dH;
+    resizeOverlay();
+    nativePreviewCanvas.style.display = "block";
+    nativeWideActive = true;
+    nativeFrameReady = false;
+
+    const plugin = window.Capacitor.Plugins.WideCamera;
+    if (!nativeFrameListener) {
+      nativeFrameListener = await plugin.addListener("frame", handleNativeFrame);
+    }
+    const diag = await plugin.startCapture({ logicalId: logicalId, physicalId: physicalId });
+    console.error("[WideCamera] résolution de capture réelle :", JSON.stringify(diag));
+  }
+
+  async function stopNativeWideCamera() {
+    if (!nativeWideActive) return;
+    nativeWideActive = false;
+    video.style.visibility = "";
+    nativePreviewCanvas.style.display = "none";
+    try { await window.Capacitor.Plugins.WideCamera.stopCapture(); } catch (e) {}
   }
 
   function resizeOverlay() {
     const rect = viewport.getBoundingClientRect();
     overlay.width = rect.width;
     overlay.height = rect.height;
+    nativePreviewCanvas.width = rect.width;
+    nativePreviewCanvas.height = rect.height;
   }
 
   function resizeDetectCanvas() {
@@ -400,9 +581,16 @@
 
   // ---------- boucle de détection ----------
   async function detectLoop() {
-    if (!model || video.readyState < 2 || isPaused) return;
+    if (!model || isPaused) return;
 
-    detectCtx.drawImage(video, 0, 0, dW, dH);
+    if (nativeWideActive) {
+      if (!nativeFrameReady) return; // pas de nouvelle image reçue depuis la dernière détection
+      nativeFrameReady = false;
+      // l'image est déjà dessinée sur detectCanvas par handleNativeFrame()
+    } else {
+      if (video.readyState < 2) return;
+      detectCtx.drawImage(video, 0, 0, dW, dH);
+    }
 
     let predictions = [];
     try {
@@ -426,25 +614,39 @@
       lastSeen = now;
 
       const growthRate = computeGrowthRate();
-      const closingSpeedKmh = computeClosingSpeedKmh();
+      const rawClosingSpeedKmh = computeClosingSpeedKmh();
+      // en dessous de ce seuil, la boîte est trop petite (cible lointaine)
+      // pour que la vitesse calculée soit fiable — le moindre bruit de
+      // détection, en proportion, produit une fausse vitesse de
+      // rapprochement (cas observé : piéton statique classé "vélo" une
+      // fois qu'on s'en est éloigné d'une vingtaine de mètres)
+      const MIN_HEIGHT_FOR_SPEED_TRUST = 10;
+      const closingSpeedKmh = heightPct >= MIN_HEIGHT_FOR_SPEED_TRUST ? rawClosingSpeedKmh : null;
       const likelyBike = closingSpeedKmh != null && closingSpeedKmh > BIKE_SPEED_THRESHOLD_KMH;
+      // une fois reconnu comme vélo pendant le suivi, reste "vélo" même si
+      // la vitesse de rapprochement retombe brièvement à l'approche du
+      // passage à notre hauteur (la distance cesse alors de diminuer
+      // rapidement, sans que ce soit devenu un piéton pour autant)
+      if (likelyBike) bikeStickyThisTrack = true;
+      const effectiveLikelyBike = bikeStickyThisTrack;
 
-      updateHUD(target.class, heightPct, closingSpeedKmh, likelyBike);
+      updateHUD(target.class, heightPct, closingSpeedKmh, effectiveLikelyBike);
       updateMiniRadar(centerXPct, heightPct);
-      drawOverlay(predictions, target, likelyBike, closingSpeedKmh);
+      drawOverlay(predictions, target, effectiveLikelyBike, closingSpeedKmh);
 
-      const level = classify(heightPct, growthRate, closingSpeedKmh);
-      setLevel(level);
-      maybeAnnounce(level, likelyBike);
+      const level = classify(heightPct, growthRate, closingSpeedKmh, history.length);
+      setLevel(level, effectiveLikelyBike);
+      maybeAnnounce(level, effectiveLikelyBike);
       setDetectionInterval(ACTIVE_INTERVAL_MS);
     } else {
       drawOverlay(predictions, null, false, null);
       if (now - lastSeen > LOST_AFTER_MS) {
         history = [];
         lastSpokenLabel = null;
+        bikeStickyThisTrack = false;
         updateHUD(null, null, null, false);
         updateMiniRadar(null, null);
-        setLevel("scan");
+        setLevel("scan", false);
         setDetectionInterval(SCAN_INTERVAL_MS);
       }
     }
@@ -470,13 +672,25 @@
     return (closingM / dt) * 3.6;
   }
 
-  function classify(heightPct, growthRate, closingSpeedKmh) {
+  const RECEDE_RATE = -4; // %/s de rétrécissement : silhouette qui s'éloigne clairement (ex. piéton croisé)
+
+  function classify(heightPct, growthRate, closingSpeedKmh, sampleCount) {
     const alerteHeight = Math.min(95, sensitivity * 1.5); // était *1.7
     const vigilHeight = sensitivity;
     const fastClosing = closingSpeedKmh != null && closingSpeedKmh >= ALERT_SPEED_KMH;
     const closing = closingSpeedKmh != null && closingSpeedKmh >= VIGIL_SPEED_KMH;
-    if (heightPct >= alerteHeight || growthRate >= ALERT_RATE || fastClosing) return "alerte";
-    if (heightPct >= vigilHeight || growthRate >= VIGIL_RATE || closing) return "vigilance";
+    // une silhouette déjà grande mais qui rétrécit (s'éloigne) ne doit pas
+    // déclencher d'alerte sur le seul critère de taille — cas typique d'un
+    // piéton qui vient de croiser le porteur et continue son chemin
+    const isReceding = growthRate <= RECEDE_RATE;
+    // le déclenchement par taille seule exige un minimum d'historique : un
+    // piéton croisé "apparaît" déjà grand dès la première image (sans
+    // phase de rapprochement visible), contrairement à une approche réelle
+    // qui grossit progressivement — les critères de vitesse, eux, restent
+    // immédiats puisqu'ils impliquent déjà un rapprochement avéré
+    const isEstablished = sampleCount >= MIN_SAMPLES_FOR_SPEED;
+    if (!isReceding && ((heightPct >= alerteHeight && isEstablished) || growthRate >= ALERT_RATE || fastClosing)) return "alerte";
+    if (!isReceding && ((heightPct >= vigilHeight && isEstablished) || growthRate >= VIGIL_RATE || closing)) return "vigilance";
     return "detecte";
   }
 
@@ -484,9 +698,12 @@
   function drawOverlay(all, target, likelyBike, closingSpeedKmh) {
     if (darkMode) return; // rien à dessiner, l'aperçu est masqué : on économise le CPU/GPU
     ctx.clearRect(0, 0, overlay.width, overlay.height);
+    // le fond (flux natif) est désormais géré indépendamment par
+    // nativePreviewCanvas, rafraîchi à chaque frame reçue — overlay ne
+    // dessine plus que les boîtes de détection, par-dessus
     const sx = overlay.width / dW;
     const sy = overlay.height / dH;
-    const mirrored = video.classList.contains("rear") === false;
+    const mirrored = !nativeWideActive && video.classList.contains("rear") === false;
 
     all.forEach((p) => {
       const isPerson = p.class === "person" && p.score >= minConfidence;
@@ -548,7 +765,7 @@
   }
 
   // ---------- gestion des niveaux d'alerte ----------
-  function setLevel(level) {
+  function setLevel(level, likelyBike) {
     if (level === currentLevel) return;
     currentLevel = level;
 
@@ -567,10 +784,14 @@
     if (level === "alerte") viewport.classList.add("level-alerte");
 
     clearInterval(alertTimer);
-    if (level === "vigilance") {
+    // si "Alerter aussi pour les piétons" est désactivé, seul un vélo
+    // (avéré) déclenche bip/vibration — un piéton reste visible à l'écran
+    // mais silencieux
+    const shouldAlertAudio = alertPedestrians || likelyBike;
+    if (level === "vigilance" && shouldAlertAudio) {
       vibrate([60]);
       alertTimer = setInterval(() => beep(760, 110), 600);
-    } else if (level === "alerte") {
+    } else if (level === "alerte" && shouldAlertAudio) {
       vibrate([90, 50, 90, 50, 90]);
       alertTimer = setInterval(() => {
         beep(1150, 70);
@@ -592,6 +813,10 @@
     clearInterval(detectTimer);
     clearInterval(alertTimer);
     currentIntervalMs = 0;
+    // les deux sources de caméra doivent être coupées explicitement — se
+    // fier uniquement au cycle de vie natif (handleOnStop) pour l'objectif
+    // grand-angle créait une fenêtre de conflit avec getUserMedia au réveil
+    if (nativeWideActive) { try { await stopNativeWideCamera(); } catch (e) {} }
     stopCamera();
     if (wakeLock) { try { await wakeLock.release(); } catch (e) {} wakeLock = null; }
   }
@@ -600,15 +825,23 @@
     if (!isRunning || !isPaused) return;
     isPaused = false;
     try {
-      await startCamera();
+      // reprendre exactement le même mode qu'avant la mise en pause,
+      // plutôt que de toujours rebasculer sur getUserMedia
+      if (selectedDeviceId && selectedDeviceId.startsWith("native:")) {
+        const [, logicalId, physicalId] = selectedDeviceId.split(":");
+        await startNativeWideCamera(logicalId, physicalId);
+      } else {
+        await startCamera();
+      }
       setDetectionInterval(SCAN_INTERVAL_MS);
       setScanIcon(true);
       refreshCameraList();
       refreshZoomControl();
       // filet de sécurité : si l'image revient noire malgré tout, on
-      // retente une fois automatiquement
+      // retente une fois automatiquement (uniquement pertinent en mode
+      // getUserMedia classique, la capture native gère son propre flux)
       setTimeout(async () => {
-        if (!isPaused && isFrameBlack()) {
+        if (!isPaused && !nativeWideActive && isFrameBlack()) {
           try { await startCamera(); } catch (e) {}
         }
       }, 700);
@@ -641,8 +874,13 @@
       statePill.dataset.level = "scan";
       statePill.textContent = "SCAN — RAS";
       setDetectionInterval(SCAN_INTERVAL_MS);
-      refreshCameraList();
+      await refreshCameraList();
       refreshZoomControl();
+      // reprend le mode natif si c'était le dernier objectif choisi
+      if (selectedDeviceId && selectedDeviceId.startsWith("native:")) {
+        const [, logicalId, physicalId] = selectedDeviceId.split(":");
+        try { await startNativeWideCamera(logicalId, physicalId); } catch (e) {}
+      }
     } catch (e) {
       startBtn.disabled = false;
       startBtn.textContent = "Démarrer la caméra";
@@ -667,10 +905,24 @@
     saveSettings();
   });
 
+  alertPedestriansToggle.addEventListener("change", () => {
+    alertPedestrians = alertPedestriansToggle.checked;
+    saveSettings();
+  });
+
   cameraSelect.addEventListener("change", async () => {
     selectedDeviceId = cameraSelect.value || null;
     saveSettings();
-    try { await startCamera(); refreshZoomControl(); } catch (e) {}
+    try {
+      if (selectedDeviceId && selectedDeviceId.startsWith("native:")) {
+        const [, logicalId, physicalId] = selectedDeviceId.split(":");
+        await startNativeWideCamera(logicalId, physicalId);
+      } else {
+        await stopNativeWideCamera();
+        await startCamera();
+        refreshZoomControl();
+      }
+    } catch (e) {}
   });
 
   settingsBtn.addEventListener("click", () => settingsDrawer.classList.add("open"));
@@ -685,6 +937,14 @@
     conf: {
       title: "Confiance minimale de détection",
       text: "Ce réglage fixe le seuil en dessous duquel une détection est ignorée. À chaque image, le modèle attribue à chaque silhouette repérée un score de probabilité qu'il s'agisse bien d'une personne (ex. 90% = quasi certain, 35% = incertain). Toute détection sous ce seuil est écartée : elle n'apparaît pas dans le suivi, ne déclenche pas d'alerte, ne compte pas dans le calcul de la vitesse de rapprochement. Seuil plus bas → détection plus tôt/plus loin, mais plus de fausses détections (ombres, buissons, poteaux). Seuil plus haut → moins de faux positifs, mais détection plus tardive."
+    },
+    fovStd: {
+      title: "Champ de vision — objectif standard",
+      text: "C'est l'angle vertical réellement couvert par l'objectif principal de la caméra, utilisé pour convertir la taille d'une personne à l'écran en distance et vitesse de rapprochement estimées. Une valeur fausse fausse silencieusement toutes les estimations, sans que la détection elle-même en soit affectée. Pour recalibrer : place une personne à une distance connue et mesurée (ex. 3m), relève la valeur \"Proxim.\" affichée dans le bandeau, puis calcule VFOV = 2 × atan(1,65 / (2 × distance_m × Proxim._%/100)), en degrés. Répète à 2-3 distances pour vérifier la cohérence."
+    },
+    fovWide: {
+      title: "Champ de vision — grand-angle",
+      text: "Même principe que le champ de vision standard, mais pour l'objectif ultra grand-angle natif — les deux sont indépendants car les deux objectifs n'ont pas le même angle de vue. Utilise le même protocole de calibration (mesure à distance connue), en mode ultra grand-angle activé."
     }
   };
 
@@ -712,9 +972,21 @@
     confValue.textContent = confSlider.value + "%";
     saveSettings();
   });
+  fovStandardInput.addEventListener("change", () => {
+    const v = Number(fovStandardInput.value);
+    if (!isNaN(v) && v > 0) { verticalFovStandardDeg = v; saveSettings(); }
+  });
+  fovWideInput.addEventListener("change", () => {
+    const v = Number(fovWideInput.value);
+    if (!isNaN(v) && v > 0) { verticalFovWideDeg = v; saveSettings(); }
+  });
 
   // ---------- enregistrement du service worker ----------
-  if ("serviceWorker" in navigator) {
+  // inutile (et contre-productif) dans l'appli native : les mises à jour se
+  // gèrent déjà par recompilation/réinstallation de l'APK, et un service
+  // worker actif dans la WebView peut continuer à servir une version
+  // périmée d'app.js malgré une recompilation, ce qui gêne le débogage.
+  if ("serviceWorker" in navigator && !(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())) {
     window.addEventListener("load", () => {
       navigator.serviceWorker.register("sw.js")
         .then((reg) => reg.update().catch(() => {})) // vérifie une mise à jour à chaque chargement
@@ -729,5 +1001,11 @@
       reloadedForUpdate = true;
       window.location.reload();
     });
+  } else if ("serviceWorker" in navigator) {
+    // sur natif : on désenregistre un éventuel service worker déjà présent
+    // (installé lors d'un test précédent) pour repartir propre
+    navigator.serviceWorker.getRegistrations().then((regs) => {
+      regs.forEach((reg) => reg.unregister());
+    }).catch(() => {});
   }
 })();
