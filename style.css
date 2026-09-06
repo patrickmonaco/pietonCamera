@@ -466,6 +466,6 @@ button{ font-family:inherit; }
   margin-top:14px;
 }
 
-@media (min-width:640px){
+@media (min-width:1024px){
   #app{ max-width:480px; margin:0 auto; border-left:1px solid var(--line); border-right:1px solid var(--line); }
 }

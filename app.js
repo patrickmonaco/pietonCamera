@@ -19,7 +19,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "1.8";
+  const APP_VERSION = "1.9";
 
   // ---------- éléments DOM ----------
   const video = document.getElementById("video");
