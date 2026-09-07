@@ -19,7 +19,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "1.10";
+  const APP_VERSION = "1.11";
 
   // ---------- éléments DOM ----------
   const video = document.getElementById("video");
@@ -582,7 +582,11 @@
     } catch (e) { /* contrainte de zoom refusée par le pilote, on ignore */ }
   });
   window.addEventListener("resize", resizeOverlay);
-  window.addEventListener("orientationchange", () => setTimeout(resizeOverlay, 300));
+  window.addEventListener("orientationchange", () => {
+    resizeOverlay(); // immédiat, au cas où les dimensions sont déjà à jour
+    setTimeout(resizeOverlay, 300);
+    setTimeout(resizeOverlay, 700); // filet de sécurité si le navigateur met plus de temps à finir la rotation
+  });
 
   // ---------- chargement du modèle ----------
   async function loadModel() {
@@ -627,6 +631,25 @@
       const heightPct = (target.bbox[3] / dH) * 100;
       const centerXPct = ((target.bbox[0] + target.bbox[2] / 2) / dW) * 100;
       const distanceM = estimateDistanceM(heightPct);
+
+      // détection de saut d'identité : avec plusieurs personnes proches en
+      // taille (groupe de piétons), la "plus grande boîte" peut basculer
+      // d'une personne à une autre d'une image à l'autre — un saut de
+      // position ou de taille trop brutal pour être un mouvement réel à
+      // cette cadence indique un changement de cible, pas une approche
+      const MAX_LATERAL_JUMP_PCT = 15;
+      const MAX_HEIGHT_RATIO_JUMP = 1.6;
+      if (history.length > 0) {
+        const last = history[history.length - 1];
+        const lateralJump = Math.abs(centerXPct - last.cx);
+        const heightRatio = Math.max(heightPct, last.h) / Math.max(1, Math.min(heightPct, last.h));
+        if (lateralJump > MAX_LATERAL_JUMP_PCT || heightRatio > MAX_HEIGHT_RATIO_JUMP) {
+          history = []; // on repart d'un suivi neuf plutôt que d'interpréter le saut comme un déplacement
+          bikeStickyThisTrack = false;
+          peakLevelThisTrack = "scan";
+          lastSpokenLabel = null;
+        }
+      }
 
       history.push({ t: now, h: heightPct, cx: centerXPct, d: distanceM });
       history = history.filter((p) => now - p.t <= HISTORY_WINDOW_MS);
@@ -727,14 +750,44 @@
   }
 
   // ---------- rendu ----------
+  // calcule la zone réellement occupée par la vidéo à l'écran quand elle
+  // est affichée en object-fit:contain (proportions préservées, bandes
+  // noires éventuelles) — nécessaire pour positionner les boîtes de
+  // détection sur la vidéo elle-même, pas sur tout le canvas qui l'englobe
+  function getContainRect(srcW, srcH, boxW, boxH) {
+    const srcRatio = srcW / srcH;
+    const boxRatio = boxW / boxH;
+    if (srcRatio > boxRatio) {
+      const dispW = boxW;
+      const dispH = boxW / srcRatio;
+      return { offX: 0, offY: (boxH - dispH) / 2, dispW, dispH };
+    }
+    const dispH = boxH;
+    const dispW = boxH * srcRatio;
+    return { offX: (boxW - dispW) / 2, offY: 0, dispW, dispH };
+  }
+
   function drawOverlay(all, target, likelyBike, closingSpeedKmh) {
     if (darkMode) return; // rien à dessiner, l'aperçu est masqué : on économise le CPU/GPU
     ctx.clearRect(0, 0, overlay.width, overlay.height);
     // le fond (flux natif) est désormais géré indépendamment par
     // nativePreviewCanvas, rafraîchi à chaque frame reçue — overlay ne
     // dessine plus que les boîtes de détection, par-dessus
-    const sx = overlay.width / dW;
-    const sy = overlay.height / dH;
+    // en mode natif, nativePreviewCanvas remplit tout l'espace (cover) —
+    // pas de bandes noires à compenser. En getUserMedia (vidéo standard),
+    // #video est en contain : on calcule sa vraie zone d'affichage.
+    let sx, sy, offX = 0, offY = 0, dispW = overlay.width;
+    if (nativeWideActive) {
+      sx = overlay.width / dW;
+      sy = overlay.height / dH;
+    } else {
+      const rect = getContainRect(dW, dH, overlay.width, overlay.height);
+      sx = rect.dispW / dW;
+      sy = rect.dispH / dH;
+      offX = rect.offX;
+      offY = rect.offY;
+      dispW = rect.dispW;
+    }
     const mirrored = video.classList.contains("mirror-on");
 
     all.forEach((p) => {
@@ -743,8 +796,10 @@
       const isTarget = p === target;
 
       let [x, y, w, h] = p.bbox;
-      x *= sx; y *= sy; w *= sx; h *= sy;
-      if (mirrored) x = overlay.width - x - w;
+      x = x * sx + offX; y = y * sy + offY; w *= sx; h *= sy;
+      // miroir appliqué à l'intérieur de la seule zone réellement occupée
+      // par la vidéo (dispW), pas sur tout le canvas qui l'englobe
+      if (mirrored) x = offX + dispW - (x - offX) - w;
 
       ctx.lineWidth = isPerson ? (isTarget ? 2.5 : 1.5) : 1;
       ctx.strokeStyle = isPerson
