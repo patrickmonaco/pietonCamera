@@ -19,7 +19,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "2.0";
+  const APP_VERSION = "2.1";
 
   // ---------- éléments DOM ----------
   const video = document.getElementById("video");
@@ -58,6 +58,8 @@
   const sensValue = document.getElementById("sensValue");
   const confSlider = document.getElementById("confSlider");
   const confValue = document.getElementById("confValue");
+  const growthSlider = document.getElementById("growthSlider");
+  const growthValue = document.getElementById("growthValue");
 
   const helpOverlay = document.getElementById("helpOverlay");
   const helpTitle = document.getElementById("helpTitle");
@@ -111,6 +113,7 @@
 
   let sensitivity = Number(sensSlider.value);
   let minConfidence = Number(confSlider.value) / 100;
+  let growthSensitivityLevel = 3; // palier 1-5, voir GROWTH_RATE_TABLE
 
   // ---------- persistance des réglages (localStorage) ----------
   const SETTINGS_KEY = "radarPieton.settings";
@@ -118,7 +121,7 @@
   function saveSettings() {
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-        sensitivity, minConfidence, soundOn, vibOn, darkMode, mirrorEffect, selectedDeviceId
+        sensitivity, minConfidence, growthSensitivityLevel, soundOn, vibOn, darkMode, mirrorEffect, selectedDeviceId
       }));
     } catch (e) { /* stockage indisponible, on ignore */ }
   }
@@ -137,6 +140,11 @@
         minConfidence = s.minConfidence;
         confSlider.value = Math.round(minConfidence * 100);
         confValue.textContent = confSlider.value + "%";
+      }
+      if (typeof s.growthSensitivityLevel === "number") {
+        growthSensitivityLevel = s.growthSensitivityLevel;
+        growthSlider.value = growthSensitivityLevel;
+        growthValue.textContent = "Palier " + growthSensitivityLevel;
       }
       if (typeof s.soundOn === "boolean") {
         soundOn = s.soundOn;
@@ -651,22 +659,25 @@
   }
 
   const RECEDE_RATE = -4; // %/s de rétrécissement : silhouette qui s'éloigne clairement (ex. piéton croisé)
-  const MIN_SAMPLES_FOR_TREND = 3; // minimum d'historique avant de déclencher sur la seule taille (évite le "pop-in" déjà grand)
+  const MIN_SAMPLES_FOR_TREND = 3; // minimum d'historique avant de se fier à la tendance
+
+  // 5 paliers de vitesse de grossissement minimale (%/s), réglables dans les
+  // paramètres — palier 5 = passer de 10% à 30% d'occupation de l'image en
+  // 1 seconde. En dessous du palier choisi, une silhouette qui grossit
+  // lentement ne déclenche plus rien : la vitesse de grossissement est
+  // désormais une condition obligatoire, pas un simple critère parmi d'autres.
+  const GROWTH_RATE_TABLE = [4, 8, 12, 16, 20];
 
   function classify(heightPct, growthRate, sampleCount) {
     const alerteHeight = Math.min(95, sensitivity * 1.5);
-    const vigilHeight = sensitivity;
-    // une silhouette déjà grande mais qui rétrécit (s'éloigne) ne doit pas
-    // déclencher d'alerte sur le seul critère de taille — cas typique d'un
-    // piéton qui vient de croiser le porteur et continue son chemin
     const isReceding = growthRate <= RECEDE_RATE;
-    // le déclenchement par taille seule exige un minimum d'historique : une
-    // silhouette qui "apparaît" déjà grande dès la première image (sans
-    // phase de grossissement visible) ne doit pas déclencher immédiatement
     const isEstablished = sampleCount >= MIN_SAMPLES_FOR_TREND;
-    if (!isReceding && ((heightPct >= alerteHeight && isEstablished) || growthRate >= ALERT_RATE)) return "alerte";
-    if (!isReceding && ((heightPct >= vigilHeight && isEstablished) || growthRate >= VIGIL_RATE)) return "vigilance";
-    return "detecte";
+    const minRate = GROWTH_RATE_TABLE[growthSensitivityLevel - 1];
+    if (isReceding || !isEstablished || growthRate < minRate) return "detecte";
+    // la croissance est jugée assez rapide : la taille déjà atteinte décide
+    // seulement du niveau d'urgence (vigilance ou alerte), plus de son
+    // déclenchement propre indépendant de la vitesse
+    return heightPct >= alerteHeight ? "alerte" : "vigilance";
   }
 
   // ---------- rendu ----------
@@ -937,6 +948,10 @@
     conf: {
       title: "Confiance minimale de détection",
       text: "Ce réglage fixe le seuil en dessous duquel une détection est ignorée. À chaque image, le modèle attribue à chaque silhouette repérée un score de probabilité qu'il s'agisse bien d'une personne (ex. 90% = quasi certain, 35% = incertain). Toute détection sous ce seuil est écartée : elle n'apparaît pas dans le suivi, ne déclenche pas d'alerte. Seuil plus bas → détection plus tôt/plus loin, mais plus de fausses détections (ombres, buissons, poteaux). Seuil plus haut → moins de faux positifs, mais détection plus tardive."
+    },
+    growth: {
+      title: "Rapidité de grossissement minimum",
+      text: "Une silhouette qui grossit lentement dans l'image ne déclenche plus d'alerte : il faut désormais qu'elle grossisse assez vite, condition obligatoire (plus un simple critère parmi d'autres). Le palier choisi fixe cette vitesse minimale : Palier 1 = 4% d'occupation d'image gagnés par seconde (le plus sensible), jusqu'au Palier 5 = 20%/s (par exemple, passer de 10% à 30% d'occupation de l'image en 1 seconde — le plus exigeant). Palier bas → alertes plus fréquentes, y compris sur des approches lentes. Palier haut → seules les approches rapides déclenchent quelque chose."
     }
   };
 
@@ -962,6 +977,11 @@
   confSlider.addEventListener("input", () => {
     minConfidence = Number(confSlider.value) / 100;
     confValue.textContent = confSlider.value + "%";
+    saveSettings();
+  });
+  growthSlider.addEventListener("input", () => {
+    growthSensitivityLevel = Number(growthSlider.value);
+    growthValue.textContent = "Palier " + growthSensitivityLevel;
     saveSettings();
   });
 

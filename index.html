@@ -100,9 +100,14 @@
       <span class="row-value" id="confValue">55%</span>
       <input type="range" id="confSlider" min="30" max="90" value="55">
     </label>
+    <label>Rapidité de grossissement minimum
+      <button type="button" class="help-icon" data-help="growth" aria-label="Aide : rapidité de grossissement minimum"><i>i</i></button>
+      <span class="row-value" id="growthValue">Palier 3</span>
+      <input type="range" id="growthSlider" min="1" max="5" step="1" value="3">
+    </label>
     <details class="settings-help">
       <summary>Aide et informations</summary>
-      <p class="settings-note">La détection cible toute personne humaine, sans distinction piéton/vélo : ce qui compte, c'est qu'une silhouette grossisse dans l'image (donc se rapproche). Le son (bips + annonce vocale "Attention") sort par la sortie audio active — écouteurs Bluetooth compris. Important : l'écran doit rester allumé (ne pas verrouiller le téléphone) pour que la détection continue de tourner en poche/pochette. Le mode "écran éteint" coupe juste l'affichage de la caméra pour économiser la batterie (utile si vous ne regardez pas le téléphone) — l'écran doit quand même rester déverrouillé. L'effet miroir inverse l'affichage horizontalement (sensation de rétroviseur) — n'affecte que l'aperçu visuel, pas la détection.</p>
+      <p class="settings-note">La détection cible toute personne humaine, sans distinction piéton/vélo : ce qui compte, c'est qu'une silhouette grossisse dans l'image assez vite (donc se rapproche activement) — voir le réglage "Rapidité de grossissement minimum". Le son (bips + annonce vocale "Attention") sort par la sortie audio active — écouteurs Bluetooth compris. Important : l'écran doit rester allumé (ne pas verrouiller le téléphone) pour que la détection continue de tourner en poche/pochette. Le mode "écran éteint" coupe juste l'affichage de la caméra pour économiser la batterie (utile si vous ne regardez pas le téléphone) — l'écran doit quand même rester déverrouillé. L'effet miroir inverse l'affichage horizontalement (sensation de rétroviseur) — n'affecte que l'aperçu visuel, pas la détection.</p>
     </details>
     <button class="primary-btn" id="closeSettings">Fermer</button>
     <p class="app-version" id="appVersion"></p>
