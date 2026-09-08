@@ -1,0 +1,8 @@
+{
+  "appId": "com.pietoncamera.radar",
+  "appName": "RadarPieton",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}

@@ -2,7 +2,7 @@
 // tolérant aux coupures réseau. Le modèle COCO-SSD et TensorFlow.js sont
 // servis par le CDN et suivent leur propre cache HTTP (network first ici).
 
-const CACHE_NAME = "radar-pieton-shell-v40";
+const CACHE_NAME = "radar-pieton-shell-v5";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -14,18 +14,8 @@ const APP_SHELL = [
 ];
 
 self.addEventListener("install", (event) => {
-  // { cache: "reload" } force chaque fichier à être récupéré depuis le
-  // réseau (en ignorant le cache HTTP du navigateur), pour garantir qu'une
-  // nouvelle version de l'appli (CACHE_NAME modifié) parte toujours de
-  // fichiers réellement à jour, pas d'une copie déjà en cache.
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) =>
-      Promise.all(
-        APP_SHELL.map((url) =>
-          fetch(url, { cache: "reload" }).then((response) => cache.put(url, response))
-        )
-      )
-    )
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL))
   );
   self.skipWaiting();
 });

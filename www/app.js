@@ -19,8 +19,6 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "2.0";
-
   // ---------- éléments DOM ----------
   const video = document.getElementById("video");
   const overlay = document.getElementById("overlay");
@@ -36,12 +34,13 @@
   const brandDot = document.getElementById("brandDot");
 
   const metricObject = document.getElementById("metricObject");
+  const metricSpeed = document.getElementById("metricSpeed");
   const metricProx = document.getElementById("metricProx");
 
   const soundToggle = document.getElementById("soundToggle");
   const vibToggle = document.getElementById("vibToggle");
   const darkModeToggle = document.getElementById("darkModeToggle");
-  const mirrorToggle = document.getElementById("mirrorToggle");
+  const alertPedestriansToggle = document.getElementById("alertPedestriansToggle");
   const darkStatus = document.getElementById("darkStatus");
   const cameraSelectRow = document.getElementById("cameraSelectRow");
   const cameraSelect = document.getElementById("cameraSelect");
@@ -51,13 +50,13 @@
   const settingsBtn = document.getElementById("settingsBtn");
   const settingsDrawer = document.getElementById("settingsDrawer");
   const closeSettings = document.getElementById("closeSettings");
-  const appVersionEl = document.getElementById("appVersion");
-  appVersionEl.textContent = "v" + APP_VERSION;
 
   const sensSlider = document.getElementById("sensSlider");
   const sensValue = document.getElementById("sensValue");
   const confSlider = document.getElementById("confSlider");
   const confValue = document.getElementById("confValue");
+  const fovStandardInput = document.getElementById("fovStandardInput");
+  const fovWideInput = document.getElementById("fovWideInput");
 
   const helpOverlay = document.getElementById("helpOverlay");
   const helpTitle = document.getElementById("helpTitle");
@@ -70,6 +69,30 @@
   const DETECT_MAX_DIM = 300;
   let dW = DETECT_MAX_DIM, dH = DETECT_MAX_DIM;
 
+  // ---------- estimation de distance / vitesse ----------
+  const ASSUMED_PERSON_HEIGHT_M = 1.65;
+  // FOV vertical mesuré via Camera2 pour chaque objectif — réglable dans les
+  // paramètres (pas seulement une constante figée dans le code) pour
+  // permettre une recalibration terrain, ou lors d'un changement de
+  // téléphone, sans avoir à recompiler l'appli native
+  let verticalFovStandardDeg = 55.6; // objectif principal
+  let verticalFovWideDeg = 79.0;     // objectif ultra grand-angle natif
+
+  const BIKE_SPEED_THRESHOLD_KMH = 5; // au-delà, on suppose un vélo plutôt qu'un piéton
+  const MIN_SAMPLES_FOR_SPEED = 3;
+  const MIN_DT_FOR_SPEED_S = 0.15;
+
+  function currentVerticalFovDeg() {
+    return nativeWideActive ? verticalFovWideDeg : verticalFovStandardDeg;
+  }
+
+  function estimateDistanceM(heightPct) {
+    if (!heightPct || heightPct <= 0) return null;
+    const fovRad = (currentVerticalFovDeg() * Math.PI / 180);
+    const k = ASSUMED_PERSON_HEIGHT_M / (2 * Math.tan(fovRad / 2));
+    return (k * 100) / heightPct;
+  }
+
   // ---------- état ----------
   let model = null;
   let stream = null;
@@ -77,11 +100,9 @@
   let soundOn = true;
   let vibOn = "vibrate" in navigator;
   if (!vibOn) vibToggle.disabled = true;
-  let darkMode = true;
-  let mirrorEffect = true; // effet miroir "rétroviseur" pour la caméra arrière/externe
-  viewport.classList.toggle("dark-active", darkMode); // applique le défaut dès le démarrage
-  const LEVEL_RANK = { scan: 0, detecte: 1, vigilance: 2, alerte: 3 };
-  let peakLevelThisTrack = "scan"; // le niveau ne redescend plus tant que l'objet ne s'éloigne pas clairement
+  let darkMode = false;
+  let alertPedestrians = true;
+  let bikeStickyThisTrack = false; // une fois reconnu vélo, le reste tant que le suivi continue
   let selectedDeviceId = null; // objectif précis choisi (dépasse le simple facingMode)
   const speechEnabled = "speechSynthesis" in window;
   // sur Android natif (Capacitor), la WebView système ne supporte pas
@@ -118,7 +139,8 @@
   function saveSettings() {
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-        sensitivity, minConfidence, soundOn, vibOn, darkMode, mirrorEffect, selectedDeviceId
+        sensitivity, minConfidence, soundOn, vibOn, darkMode, alertPedestrians, selectedDeviceId,
+        verticalFovStandardDeg, verticalFovWideDeg
       }));
     } catch (e) { /* stockage indisponible, on ignore */ }
   }
@@ -151,13 +173,20 @@
         darkModeToggle.checked = darkMode;
         viewport.classList.toggle("dark-active", darkMode);
       }
-      if (typeof s.mirrorEffect === "boolean") {
-        mirrorEffect = s.mirrorEffect;
-        mirrorToggle.checked = mirrorEffect;
-        updateMirrorState();
+      if (typeof s.alertPedestrians === "boolean") {
+        alertPedestrians = s.alertPedestrians;
+        alertPedestriansToggle.checked = alertPedestrians;
       }
       if (typeof s.selectedDeviceId === "string") {
         selectedDeviceId = s.selectedDeviceId;
+      }
+      if (typeof s.verticalFovStandardDeg === "number") {
+        verticalFovStandardDeg = s.verticalFovStandardDeg;
+        fovStandardInput.value = verticalFovStandardDeg;
+      }
+      if (typeof s.verticalFovWideDeg === "number") {
+        verticalFovWideDeg = s.verticalFovWideDeg;
+        fovWideInput.value = verticalFovWideDeg;
       }
     } catch (e) { /* réglages sauvegardés illisibles, on garde les valeurs par défaut */ }
   }
@@ -167,11 +196,12 @@
   const HISTORY_WINDOW_MS = 1200;
   const LOST_AFTER_MS = 700;
 
-  // Seuils de grossissement : seul critère désormais, plus de conversion
-  // en distance/vitesse réelle — on regarde uniquement si la silhouette
-  // occupe une part croissante de l'image, et à quelle vitesse.
-  const ALERT_RATE = 14;  // %/s de grossissement -> alerte
-  const VIGIL_RATE = 6;   // %/s de grossissement -> vigilance
+  // Seuils abaissés par rapport à la v3 pour alerter plus tôt, et vitesse de
+  // rapprochement ajoutée comme déclencheur indépendant de la taille de boîte.
+  const ALERT_RATE = 14;       // %/s de grossissement -> alerte (était 20)
+  const VIGIL_RATE = 6;        // %/s de grossissement -> vigilance (était 8)
+  const ALERT_SPEED_KMH = 14;  // rapprochement rapide -> alerte, même si encore loin
+  const VIGIL_SPEED_KMH = 5;   // rapprochement notable -> vigilance, même si encore loin (aligné sur le seuil vélo)
 
   const SCAN_INTERVAL_MS = 400;   // priorité batterie (était 250) — la marge de détection reste suffisante
   const ACTIVE_INTERVAL_MS = 200; // priorité batterie (était 135)
@@ -224,15 +254,18 @@
     } catch (e) { /* synthèse vocale indisponible, on ignore */ }
   }
 
-  // annonce "Attention" dès l'entrée en vigilance/alerte, et répète tant
-  // que l'alerte persiste (toutes les ALERT_REPEAT_MS) — plus de distinction
-  // piéton/vélo, seul le fait qu'une silhouette grossisse compte désormais
-  function maybeAnnounce(level) {
+  // annonce "Piéton" / "Vélo" dès l'entrée en vigilance/alerte, et répète
+  // tant que l'alerte persiste (toutes les ALERT_REPEAT_MS)
+  function maybeAnnounce(level, likelyBike) {
     if (level !== "vigilance" && level !== "alerte") {
       lastSpokenLabel = null;
       return;
     }
-    const label = "Attention";
+    if (!likelyBike && !alertPedestrians) {
+      lastSpokenLabel = null; // piétons désactivés : rien à annoncer pour celui-ci
+      return;
+    }
+    const label = likelyBike ? "Vélo" : "Piéton";
     const now = performance.now();
     const shouldRepeat = level === "alerte" && now - lastAnnounceTime > ALERT_REPEAT_MS;
     if (label !== lastSpokenLabel || shouldRepeat) {
@@ -268,14 +301,6 @@
     try { navigator.vibrate(pattern); } catch (e) {}
   }
 
-  // effet miroir : automatique pour la caméra frontale (convention selfie),
-  // optionnel pour la caméra arrière/externe (sensation de rétroviseur) —
-  // une seule transformation CSS, quasi gratuite (accélérée matériellement)
-  function updateMirrorState() {
-    const shouldMirror = currentFacing === "user" || mirrorEffect;
-    video.classList.toggle("mirror-on", shouldMirror);
-  }
-
   // ---------- caméra ----------
   async function startCamera() {
     stopCamera();
@@ -289,11 +314,10 @@
       frameRate: { ideal: 15, max: 20 }
     };
     if (selectedDeviceId && !selectedDeviceId.startsWith("native:")) {
-      // exigence stricte quand la caméra existe réellement (pas de dérive
-      // possible vers une autre caméra si les autres critères — résolution,
-      // fréquence — collent moins bien) ; le rattrapage en cas d'identifiant
-      // périmé se fait dans le bloc catch ci-dessous, pas ici
-      videoConstraints.deviceId = { exact: selectedDeviceId };
+      videoConstraints.deviceId = { ideal: selectedDeviceId }; // préférence, pas obligation —
+      // une caméra USB externe n'a pas toujours un identifiant stable d'un
+      // branchement à l'autre ; en exigence stricte ("exact"), un identifiant
+      // périmé bloque tout accès caméra au lieu de se rabattre sur une autre
     } else {
       videoConstraints.facingMode = { ideal: currentFacing };
     }
@@ -329,7 +353,7 @@
     const trackSettings = activeTrack && activeTrack.getSettings ? activeTrack.getSettings() : {};
     if (trackSettings.facingMode) currentFacing = trackSettings.facingMode;
 
-    updateMirrorState();
+    video.classList.toggle("rear", currentFacing !== "user");
 
     // attendre les métadonnées avant de lire — limite l'écran noir parfois
     // observé après une reprise depuis l'arrière-plan sur Android
@@ -535,11 +559,7 @@
     } catch (e) { /* contrainte de zoom refusée par le pilote, on ignore */ }
   });
   window.addEventListener("resize", resizeOverlay);
-  window.addEventListener("orientationchange", () => {
-    resizeOverlay(); // immédiat, au cas où les dimensions sont déjà à jour
-    setTimeout(resizeOverlay, 300);
-    setTimeout(resizeOverlay, 700); // filet de sécurité si le navigateur met plus de temps à finir la rotation
-  });
+  window.addEventListener("orientationchange", () => setTimeout(resizeOverlay, 300));
 
   // ---------- chargement du modèle ----------
   async function loadModel() {
@@ -583,59 +603,46 @@
       const target = people.reduce((a, b) => (b.bbox[3] > a.bbox[3] ? b : a));
       const heightPct = (target.bbox[3] / dH) * 100;
       const centerXPct = ((target.bbox[0] + target.bbox[2] / 2) / dW) * 100;
+      const distanceM = estimateDistanceM(heightPct);
 
-      // détection de saut d'identité : avec plusieurs personnes proches en
-      // taille (groupe de piétons), la "plus grande boîte" peut basculer
-      // d'une personne à une autre d'une image à l'autre — un saut de
-      // position ou de taille trop brutal pour être un mouvement réel à
-      // cette cadence indique un changement de cible, pas une approche
-      const MAX_LATERAL_JUMP_PCT = 15;
-      const MAX_HEIGHT_RATIO_JUMP = 1.6;
-      if (history.length > 0) {
-        const last = history[history.length - 1];
-        const lateralJump = Math.abs(centerXPct - last.cx);
-        const heightRatio = Math.max(heightPct, last.h) / Math.max(1, Math.min(heightPct, last.h));
-        if (lateralJump > MAX_LATERAL_JUMP_PCT || heightRatio > MAX_HEIGHT_RATIO_JUMP) {
-          history = []; // on repart d'un suivi neuf plutôt que d'interpréter le saut comme un déplacement
-          peakLevelThisTrack = "scan";
-          lastSpokenLabel = null;
-        }
-      }
-
-      history.push({ t: now, h: heightPct, cx: centerXPct });
+      history.push({ t: now, h: heightPct, cx: centerXPct, d: distanceM });
       history = history.filter((p) => now - p.t <= HISTORY_WINDOW_MS);
       lastSeen = now;
 
       const growthRate = computeGrowthRate();
+      const rawClosingSpeedKmh = computeClosingSpeedKmh();
+      // en dessous de ce seuil, la boîte est trop petite (cible lointaine)
+      // pour que la vitesse calculée soit fiable — le moindre bruit de
+      // détection, en proportion, produit une fausse vitesse de
+      // rapprochement (cas observé : piéton statique classé "vélo" une
+      // fois qu'on s'en est éloigné d'une vingtaine de mètres)
+      const MIN_HEIGHT_FOR_SPEED_TRUST = 10;
+      const closingSpeedKmh = heightPct >= MIN_HEIGHT_FOR_SPEED_TRUST ? rawClosingSpeedKmh : null;
+      const likelyBike = closingSpeedKmh != null && closingSpeedKmh > BIKE_SPEED_THRESHOLD_KMH;
+      // une fois reconnu comme vélo pendant le suivi, reste "vélo" même si
+      // la vitesse de rapprochement retombe brièvement à l'approche du
+      // passage à notre hauteur (la distance cesse alors de diminuer
+      // rapidement, sans que ce soit devenu un piéton pour autant)
+      if (likelyBike) bikeStickyThisTrack = true;
+      const effectiveLikelyBike = bikeStickyThisTrack;
 
-      updateHUD(target.class, heightPct);
+      updateHUD(target.class, heightPct, closingSpeedKmh, effectiveLikelyBike);
       updateMiniRadar(centerXPct, heightPct);
+      drawOverlay(predictions, target, effectiveLikelyBike, closingSpeedKmh);
 
-      const rawLevel = classify(heightPct, growthRate, history.length);
-      // le niveau ne redescend plus sur une simple mesure ponctuelle bruitée
-      // — une fois vigilance/alerte atteint, il reste tant que l'objet
-      // n'est pas clairement en train de s'éloigner
-      const isClearlyReceding = growthRate <= RECEDE_RATE;
-      if (isClearlyReceding) {
-        peakLevelThisTrack = rawLevel;
-      } else if (LEVEL_RANK[rawLevel] > LEVEL_RANK[peakLevelThisTrack]) {
-        peakLevelThisTrack = rawLevel;
-      }
-      const level = peakLevelThisTrack;
-
-      drawOverlay(predictions, target);
-      setLevel(level);
-      maybeAnnounce(level);
+      const level = classify(heightPct, growthRate, closingSpeedKmh, history.length);
+      setLevel(level, effectiveLikelyBike);
+      maybeAnnounce(level, effectiveLikelyBike);
       setDetectionInterval(ACTIVE_INTERVAL_MS);
     } else {
-      drawOverlay(predictions, null);
+      drawOverlay(predictions, null, false, null);
       if (now - lastSeen > LOST_AFTER_MS) {
         history = [];
         lastSpokenLabel = null;
-        peakLevelThisTrack = "scan";
-        updateHUD(null, null);
+        bikeStickyThisTrack = false;
+        updateHUD(null, null, null, false);
         updateMiniRadar(null, null);
-        setLevel("scan");
+        setLevel("scan", false);
         setDetectionInterval(SCAN_INTERVAL_MS);
       }
     }
@@ -650,65 +657,49 @@
     return (last.h - first.h) / dt;
   }
 
-  const RECEDE_RATE = -4; // %/s de rétrécissement : silhouette qui s'éloigne clairement (ex. piéton croisé)
-  const MIN_SAMPLES_FOR_TREND = 3; // minimum d'historique avant de déclencher sur la seule taille (évite le "pop-in" déjà grand)
+  function computeClosingSpeedKmh() {
+    if (history.length < MIN_SAMPLES_FOR_SPEED) return null;
+    const first = history[0];
+    const last = history[history.length - 1];
+    if (first.d == null || last.d == null) return null;
+    const dt = (last.t - first.t) / 1000;
+    if (dt < MIN_DT_FOR_SPEED_S) return null;
+    const closingM = first.d - last.d;
+    return (closingM / dt) * 3.6;
+  }
 
-  function classify(heightPct, growthRate, sampleCount) {
-    const alerteHeight = Math.min(95, sensitivity * 1.5);
+  const RECEDE_RATE = -4; // %/s de rétrécissement : silhouette qui s'éloigne clairement (ex. piéton croisé)
+
+  function classify(heightPct, growthRate, closingSpeedKmh, sampleCount) {
+    const alerteHeight = Math.min(95, sensitivity * 1.5); // était *1.7
     const vigilHeight = sensitivity;
+    const fastClosing = closingSpeedKmh != null && closingSpeedKmh >= ALERT_SPEED_KMH;
+    const closing = closingSpeedKmh != null && closingSpeedKmh >= VIGIL_SPEED_KMH;
     // une silhouette déjà grande mais qui rétrécit (s'éloigne) ne doit pas
     // déclencher d'alerte sur le seul critère de taille — cas typique d'un
     // piéton qui vient de croiser le porteur et continue son chemin
     const isReceding = growthRate <= RECEDE_RATE;
-    // le déclenchement par taille seule exige un minimum d'historique : une
-    // silhouette qui "apparaît" déjà grande dès la première image (sans
-    // phase de grossissement visible) ne doit pas déclencher immédiatement
-    const isEstablished = sampleCount >= MIN_SAMPLES_FOR_TREND;
-    if (!isReceding && ((heightPct >= alerteHeight && isEstablished) || growthRate >= ALERT_RATE)) return "alerte";
-    if (!isReceding && ((heightPct >= vigilHeight && isEstablished) || growthRate >= VIGIL_RATE)) return "vigilance";
+    // le déclenchement par taille seule exige un minimum d'historique : un
+    // piéton croisé "apparaît" déjà grand dès la première image (sans
+    // phase de rapprochement visible), contrairement à une approche réelle
+    // qui grossit progressivement — les critères de vitesse, eux, restent
+    // immédiats puisqu'ils impliquent déjà un rapprochement avéré
+    const isEstablished = sampleCount >= MIN_SAMPLES_FOR_SPEED;
+    if (!isReceding && ((heightPct >= alerteHeight && isEstablished) || growthRate >= ALERT_RATE || fastClosing)) return "alerte";
+    if (!isReceding && ((heightPct >= vigilHeight && isEstablished) || growthRate >= VIGIL_RATE || closing)) return "vigilance";
     return "detecte";
   }
 
   // ---------- rendu ----------
-  // calcule la zone réellement occupée par la vidéo à l'écran quand elle
-  // est affichée en object-fit:contain (proportions préservées, bandes
-  // noires éventuelles) — nécessaire pour positionner les boîtes de
-  // détection sur la vidéo elle-même, pas sur tout le canvas qui l'englobe
-  function getContainRect(srcW, srcH, boxW, boxH) {
-    const srcRatio = srcW / srcH;
-    const boxRatio = boxW / boxH;
-    if (srcRatio > boxRatio) {
-      const dispW = boxW;
-      const dispH = boxW / srcRatio;
-      return { offX: 0, offY: (boxH - dispH) / 2, dispW, dispH };
-    }
-    const dispH = boxH;
-    const dispW = boxH * srcRatio;
-    return { offX: (boxW - dispW) / 2, offY: 0, dispW, dispH };
-  }
-
-  function drawOverlay(all, target) {
+  function drawOverlay(all, target, likelyBike, closingSpeedKmh) {
     if (darkMode) return; // rien à dessiner, l'aperçu est masqué : on économise le CPU/GPU
     ctx.clearRect(0, 0, overlay.width, overlay.height);
     // le fond (flux natif) est désormais géré indépendamment par
     // nativePreviewCanvas, rafraîchi à chaque frame reçue — overlay ne
     // dessine plus que les boîtes de détection, par-dessus
-    // en mode natif, nativePreviewCanvas remplit tout l'espace (cover) —
-    // pas de bandes noires à compenser. En getUserMedia (vidéo standard),
-    // #video est en contain : on calcule sa vraie zone d'affichage.
-    let sx, sy, offX = 0, offY = 0, dispW = overlay.width;
-    if (nativeWideActive) {
-      sx = overlay.width / dW;
-      sy = overlay.height / dH;
-    } else {
-      const rect = getContainRect(dW, dH, overlay.width, overlay.height);
-      sx = rect.dispW / dW;
-      sy = rect.dispH / dH;
-      offX = rect.offX;
-      offY = rect.offY;
-      dispW = rect.dispW;
-    }
-    const mirrored = video.classList.contains("mirror-on");
+    const sx = overlay.width / dW;
+    const sy = overlay.height / dH;
+    const mirrored = !nativeWideActive && video.classList.contains("rear") === false;
 
     all.forEach((p) => {
       const isPerson = p.class === "person" && p.score >= minConfidence;
@@ -716,10 +707,8 @@
       const isTarget = p === target;
 
       let [x, y, w, h] = p.bbox;
-      x = x * sx + offX; y = y * sy + offY; w *= sx; h *= sy;
-      // miroir appliqué à l'intérieur de la seule zone réellement occupée
-      // par la vidéo (dispW), pas sur tout le canvas qui l'englobe
-      if (mirrored) x = offX + dispW - (x - offX) - w;
+      x *= sx; y *= sy; w *= sx; h *= sy;
+      if (mirrored) x = overlay.width - x - w;
 
       ctx.lineWidth = isPerson ? (isTarget ? 2.5 : 1.5) : 1;
       ctx.strokeStyle = isPerson
@@ -728,7 +717,10 @@
       ctx.strokeRect(x, y, w, h);
 
       if (isPerson) {
-        const label = "PERSONNE";
+        let label = "PERSONNE";
+        if (isTarget) {
+          label = likelyBike ? `VÉLO ? ~${Math.round(closingSpeedKmh)} KM/H` : "PIÉTON";
+        }
         ctx.font = "600 12px 'Space Mono', monospace";
         const textW = ctx.measureText(label).width + 10;
         ctx.fillStyle = isTarget ? levelColor(currentLevel) : "rgba(52,211,153,0.5)";
@@ -745,8 +737,9 @@
     return "#34D399";
   }
 
-  function updateHUD(cls, heightPct) {
-    metricObject.textContent = cls ? "PERSONNE" : "—";
+  function updateHUD(cls, heightPct, closingSpeedKmh, likelyBike) {
+    metricObject.textContent = cls ? (likelyBike ? "VÉLO ?" : "PIÉTON") : "—";
+    metricSpeed.textContent = closingSpeedKmh != null ? Math.round(closingSpeedKmh) + " km/h" : "—";
     metricProx.textContent = heightPct ? Math.round(heightPct) + "%" : "—";
   }
 
@@ -768,7 +761,7 @@
   }
 
   // ---------- gestion des niveaux d'alerte ----------
-  function setLevel(level) {
+  function setLevel(level, likelyBike) {
     if (level === currentLevel) return;
     currentLevel = level;
 
@@ -787,10 +780,14 @@
     if (level === "alerte") viewport.classList.add("level-alerte");
 
     clearInterval(alertTimer);
-    if (level === "vigilance") {
+    // si "Alerter aussi pour les piétons" est désactivé, seul un vélo
+    // (avéré) déclenche bip/vibration — un piéton reste visible à l'écran
+    // mais silencieux
+    const shouldAlertAudio = alertPedestrians || likelyBike;
+    if (level === "vigilance" && shouldAlertAudio) {
       vibrate([60]);
       alertTimer = setInterval(() => beep(760, 110), 600);
-    } else if (level === "alerte") {
+    } else if (level === "alerte" && shouldAlertAudio) {
       vibrate([90, 50, 90, 50, 90]);
       alertTimer = setInterval(() => {
         beep(1150, 70);
@@ -904,9 +901,8 @@
     saveSettings();
   });
 
-  mirrorToggle.addEventListener("change", () => {
-    mirrorEffect = mirrorToggle.checked;
-    updateMirrorState();
+  alertPedestriansToggle.addEventListener("change", () => {
+    alertPedestrians = alertPedestriansToggle.checked;
     saveSettings();
   });
 
@@ -932,11 +928,19 @@
   const HELP_CONTENT = {
     sens: {
       title: "Seuil de vigilance",
-      text: "Ce curseur fixe la taille que doit atteindre une personne à l'écran (en % de la hauteur de l'image) pour que l'appli passe en VIGILANCE — c'est-à-dire qu'elle occupe une part croissante du champ de la caméra, donc qu'elle se rapproche. Le niveau ALERTE se déclenche ensuite vers 1,5 fois ce seuil. Un grossissement rapide de la silhouette peut aussi déclencher ces niveaux plus tôt, même si la taille n'a pas encore atteint le seuil. Seuil plus bas → alertes plus précoces mais potentiellement plus fréquentes ; seuil plus haut → alertes plus tardives mais plus sûres."
+      text: "Ce curseur fixe la taille que doit atteindre une personne à l'écran (en % de la hauteur de l'image) pour que l'appli passe en VIGILANCE — c'est-à-dire qu'elle occupe une part croissante du champ de la caméra, donc qu'elle se rapproche. Le niveau ALERTE se déclenche ensuite vers 1,5 fois ce seuil. Une vitesse de rapprochement élevée ou un grossissement rapide de la silhouette peuvent aussi déclencher ces niveaux plus tôt, même si la taille n'a pas encore atteint le seuil. Seuil plus bas → alertes plus précoces mais potentiellement plus fréquentes ; seuil plus haut → alertes plus tardives mais plus sûres."
     },
     conf: {
       title: "Confiance minimale de détection",
-      text: "Ce réglage fixe le seuil en dessous duquel une détection est ignorée. À chaque image, le modèle attribue à chaque silhouette repérée un score de probabilité qu'il s'agisse bien d'une personne (ex. 90% = quasi certain, 35% = incertain). Toute détection sous ce seuil est écartée : elle n'apparaît pas dans le suivi, ne déclenche pas d'alerte. Seuil plus bas → détection plus tôt/plus loin, mais plus de fausses détections (ombres, buissons, poteaux). Seuil plus haut → moins de faux positifs, mais détection plus tardive."
+      text: "Ce réglage fixe le seuil en dessous duquel une détection est ignorée. À chaque image, le modèle attribue à chaque silhouette repérée un score de probabilité qu'il s'agisse bien d'une personne (ex. 90% = quasi certain, 35% = incertain). Toute détection sous ce seuil est écartée : elle n'apparaît pas dans le suivi, ne déclenche pas d'alerte, ne compte pas dans le calcul de la vitesse de rapprochement. Seuil plus bas → détection plus tôt/plus loin, mais plus de fausses détections (ombres, buissons, poteaux). Seuil plus haut → moins de faux positifs, mais détection plus tardive."
+    },
+    fovStd: {
+      title: "Champ de vision — objectif standard",
+      text: "C'est l'angle vertical réellement couvert par l'objectif principal de la caméra, utilisé pour convertir la taille d'une personne à l'écran en distance et vitesse de rapprochement estimées. Une valeur fausse fausse silencieusement toutes les estimations, sans que la détection elle-même en soit affectée. Pour recalibrer : place une personne à une distance connue et mesurée (ex. 3m), relève la valeur \"Proxim.\" affichée dans le bandeau, puis calcule VFOV = 2 × atan(1,65 / (2 × distance_m × Proxim._%/100)), en degrés. Répète à 2-3 distances pour vérifier la cohérence."
+    },
+    fovWide: {
+      title: "Champ de vision — grand-angle",
+      text: "Même principe que le champ de vision standard, mais pour l'objectif ultra grand-angle natif — les deux sont indépendants car les deux objectifs n'ont pas le même angle de vue. Utilise le même protocole de calibration (mesure à distance connue), en mode ultra grand-angle activé."
     }
   };
 
@@ -963,6 +967,14 @@
     minConfidence = Number(confSlider.value) / 100;
     confValue.textContent = confSlider.value + "%";
     saveSettings();
+  });
+  fovStandardInput.addEventListener("change", () => {
+    const v = Number(fovStandardInput.value);
+    if (!isNaN(v) && v > 0) { verticalFovStandardDeg = v; saveSettings(); }
+  });
+  fovWideInput.addEventListener("change", () => {
+    const v = Number(fovWideInput.value);
+    if (!isNaN(v) && v > 0) { verticalFovWideDeg = v; saveSettings(); }
   });
 
   // ---------- enregistrement du service worker ----------

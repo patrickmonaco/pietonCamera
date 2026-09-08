@@ -1,0 +1,29 @@
+{
+  "name": "pietoncamera",
+  "version": "1.0.0",
+  "description": "PWA (Progressive Web App) qui détecte, via la caméra d'un smartphone et un modèle de vision embarqué, la présence d'une personne (piéton ou cycliste) approchant par l'arrière, et déclenche une alerte progressive (son, vibration, annonce vocale).",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "sync": "npx cap sync android",
+    "open": "npx cap open android"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/patrickmonaco/pietonCamera.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/patrickmonaco/pietonCamera/issues"
+  },
+  "homepage": "https://github.com/patrickmonaco/pietonCamera#readme",
+  "dependencies": {
+    "@capacitor-community/text-to-speech": "^8.0.2",
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0"
+  }
+}
