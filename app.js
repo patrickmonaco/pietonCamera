@@ -240,7 +240,7 @@
       lastSpokenLabel = null;
       return;
     }
-    const label = "Attention";
+    const label = "Velo";
     const now = performance.now();
     const shouldRepeat = level === "alerte" && now - lastAnnounceTime > ALERT_REPEAT_MS;
     if (label !== lastSpokenLabel || shouldRepeat) {
