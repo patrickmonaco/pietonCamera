@@ -19,7 +19,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "2.1";
+  const APP_VERSION = "2.2";
 
   // ---------- éléments DOM ----------
   const video = document.getElementById("video");
@@ -659,7 +659,7 @@
   }
 
   const RECEDE_RATE = -4; // %/s de rétrécissement : silhouette qui s'éloigne clairement (ex. piéton croisé)
-  const MIN_SAMPLES_FOR_TREND = 3; // minimum d'historique avant de se fier à la tendance
+  const MIN_SAMPLES_FOR_TREND = 2; // réduit (était 3) : les vélos rapides parcourent trop de distance pendant le délai d'accumulation
 
   // 5 paliers de vitesse de grossissement minimale (%/s), réglables dans les
   // paramètres — palier 5 = passer de 10% à 30% d'occupation de l'image en
