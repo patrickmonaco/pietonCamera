@@ -19,7 +19,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "2.2";
+  const APP_VERSION = "2.3";
 
   // ---------- éléments DOM ----------
   const video = document.getElementById("video");
@@ -42,6 +42,7 @@
   const vibToggle = document.getElementById("vibToggle");
   const darkModeToggle = document.getElementById("darkModeToggle");
   const mirrorToggle = document.getElementById("mirrorToggle");
+  const notifyPresenceToggle = document.getElementById("notifyPresenceToggle");
   const darkStatus = document.getElementById("darkStatus");
   const cameraSelectRow = document.getElementById("cameraSelectRow");
   const cameraSelect = document.getElementById("cameraSelect");
@@ -81,6 +82,8 @@
   if (!vibOn) vibToggle.disabled = true;
   let darkMode = true;
   let mirrorEffect = true; // effet miroir "rétroviseur" pour la caméra arrière/externe
+  let notifyPresence = false; // signal doux, une fois, dès qu'une personne est détectée (sans condition de vitesse)
+  let presenceNotifiedThisTrack = false;
   viewport.classList.toggle("dark-active", darkMode); // applique le défaut dès le démarrage
   const LEVEL_RANK = { scan: 0, detecte: 1, vigilance: 2, alerte: 3 };
   let peakLevelThisTrack = "scan"; // le niveau ne redescend plus tant que l'objet ne s'éloigne pas clairement
@@ -121,7 +124,7 @@
   function saveSettings() {
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-        sensitivity, minConfidence, growthSensitivityLevel, soundOn, vibOn, darkMode, mirrorEffect, selectedDeviceId
+        sensitivity, minConfidence, growthSensitivityLevel, soundOn, vibOn, darkMode, mirrorEffect, notifyPresence, selectedDeviceId
       }));
     } catch (e) { /* stockage indisponible, on ignore */ }
   }
@@ -164,6 +167,10 @@
         mirrorToggle.checked = mirrorEffect;
         updateMirrorState();
       }
+      if (typeof s.notifyPresence === "boolean") {
+        notifyPresence = s.notifyPresence;
+        notifyPresenceToggle.checked = notifyPresence;
+      }
       if (typeof s.selectedDeviceId === "string") {
         selectedDeviceId = s.selectedDeviceId;
       }
@@ -201,6 +208,13 @@
       gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + durationMs / 1000);
       osc.stop(audioCtx.currentTime + durationMs / 1000);
     } catch (e) { /* audio non disponible, on ignore */ }
+  }
+
+  // signal doux (deux notes courtes, plus grave que les bips d'alerte) pour
+  // la notification "présence" — non stressant, une seule fois par suivi
+  function presenceChime() {
+    beep(560, 110, 0.14);
+    setTimeout(() => beep(440, 140, 0.14), 130);
   }
 
   // ---------- audio : annonce vocale ----------
@@ -607,12 +621,22 @@
           history = []; // on repart d'un suivi neuf plutôt que d'interpréter le saut comme un déplacement
           peakLevelThisTrack = "scan";
           lastSpokenLabel = null;
+          presenceNotifiedThisTrack = false;
         }
       }
 
       history.push({ t: now, h: heightPct, cx: centerXPct });
       history = history.filter((p) => now - p.t <= HISTORY_WINDOW_MS);
       lastSeen = now;
+
+      // signal doux de simple présence : une fois par suivi, dès la
+      // première détection, sans condition de vitesse ni de taille —
+      // utile en environnement peu fréquenté, pour savoir que quelqu'un
+      // est là même si rien n'approche activement
+      if (notifyPresence && !presenceNotifiedThisTrack) {
+        presenceChime();
+        presenceNotifiedThisTrack = true;
+      }
 
       const growthRate = computeGrowthRate();
 
@@ -641,6 +665,7 @@
         history = [];
         lastSpokenLabel = null;
         peakLevelThisTrack = "scan";
+        presenceNotifiedThisTrack = false;
         updateHUD(null, null);
         updateMiniRadar(null, null);
         setLevel("scan");
@@ -918,6 +943,11 @@
   mirrorToggle.addEventListener("change", () => {
     mirrorEffect = mirrorToggle.checked;
     updateMirrorState();
+    saveSettings();
+  });
+
+  notifyPresenceToggle.addEventListener("change", () => {
+    notifyPresence = notifyPresenceToggle.checked;
     saveSettings();
   });
 
