@@ -19,7 +19,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "2.3";
+  const APP_VERSION = "2.4";
 
   // ---------- éléments DOM ----------
   const video = document.getElementById("video");
@@ -254,7 +254,7 @@
       lastSpokenLabel = null;
       return;
     }
-    const label = "Vélo";
+    const label = "Attention";
     const now = performance.now();
     const shouldRepeat = level === "alerte" && now - lastAnnounceTime > ALERT_REPEAT_MS;
     if (label !== lastSpokenLabel || shouldRepeat) {
@@ -403,6 +403,11 @@
         const opt = document.createElement("option");
         opt.value = d.deviceId;
         opt.textContent = d.label || `Caméra ${i + 1}`;
+        // repère les objectifs grand-angle à partir de leur étiquette
+        // système (ex. "facing external", "wide") pour compenser le seuil
+        // de grossissement — un grand-angle fait paraître un objet plus
+        // petit à distance égale, donc grossir plus lentement en %/s
+        opt.dataset.wide = /external|wide|grand.?angle/i.test(d.label) ? "1" : "0";
         cameraSelect.appendChild(opt);
         optionCount++;
       });
@@ -419,6 +424,7 @@
           const opt = document.createElement("option");
           opt.value = `native:${cam.logicalId}:${widest.physicalId}`;
           opt.textContent = "Ultra grand-angle (natif)";
+          opt.dataset.wide = "1"; // toujours large par construction
           cameraSelect.appendChild(opt);
           optionCount++;
         });
@@ -427,10 +433,22 @@
 
     if (optionCount <= 1) {
       cameraSelectRow.style.display = "none";
+      updateWideCameraState();
       return;
     }
     if (selectedDeviceId) cameraSelect.value = selectedDeviceId;
     cameraSelectRow.style.display = "";
+    updateWideCameraState();
+  }
+
+  // ajuste le seuil effectif de grossissement selon que l'objectif actif
+  // est grand-angle ou non (voir explication du facteur plus bas)
+  const WIDE_CAMERA_COMPENSATION = 0.53; // dérivé du rapport de FOV standard/externe
+  let isWideCameraActive = false;
+
+  function updateWideCameraState() {
+    const opt = cameraSelect.options[cameraSelect.selectedIndex];
+    isWideCameraActive = !!(opt && opt.dataset.wide === "1");
   }
 
   // ---------- objectif ultra grand-angle natif (Camera2) ----------
@@ -697,7 +715,12 @@
     const alerteHeight = Math.min(95, sensitivity * 1.5);
     const isReceding = growthRate <= RECEDE_RATE;
     const isEstablished = sampleCount >= MIN_SAMPLES_FOR_TREND;
-    const minRate = GROWTH_RATE_TABLE[growthSensitivityLevel - 1];
+    // compense le seuil pour un objectif grand-angle : à distance et
+    // vitesse réelles identiques, il grossit plus lentement en %/s qu'un
+    // objectif standard (voir dérivation : Proxim.(%) = K/distance, avec K
+    // plus petit pour un FOV plus large)
+    const baseRate = GROWTH_RATE_TABLE[growthSensitivityLevel - 1];
+    const minRate = isWideCameraActive ? baseRate * WIDE_CAMERA_COMPENSATION : baseRate;
     if (isReceding || !isEstablished || growthRate < minRate) return "detecte";
     // la croissance est jugée assez rapide : la taille déjà atteinte décide
     // seulement du niveau d'urgence (vigilance ou alerte), plus de son
@@ -953,6 +976,7 @@
 
   cameraSelect.addEventListener("change", async () => {
     selectedDeviceId = cameraSelect.value || null;
+    updateWideCameraState();
     saveSettings();
     try {
       if (selectedDeviceId && selectedDeviceId.startsWith("native:")) {
