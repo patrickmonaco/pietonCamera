@@ -1,121 +1,111 @@
 # Radar Piéton
 
-PWA (Progressive Web App) qui détecte, via la caméra d'un smartphone et un modèle de vision embarqué, la présence d'une personne (piéton ou cycliste) approchant par l'arrière, et déclenche une alerte progressive (son, vibration, annonce vocale).
+PWA (Progressive Web App) qui détecte, via la caméra d'un smartphone (ou d'une caméra USB externe), la présence d'une personne approchant par l'arrière, et déclenche une alerte progressive (son, vibration, annonce vocale).
 
-Aucune image n'est envoyée à un serveur : la détection tourne entièrement sur l'appareil.
+Aucune image n'est envoyée à un serveur ni enregistrée : la détection tourne entièrement sur l'appareil, en temps réel, et chaque image est jetée aussitôt analysée.
 
 ## Contexte
 
-Le projet visait initialement une détection par capteur radar/ultrason/LiDAR, sur le modèle des radars de recul pour cyclistes (type Garmin Varia). Plusieurs capteurs ont été évalués (HC-SR04, RCWL-0516, HLK-LD2410/LD2450, TF-Luna) sans offrir, à budget raisonnable, la portée et la directionnalité nécessaires. Le projet s'est réorienté vers une approche caméra + intelligence artificielle embarquée, plus accessible avec le matériel disponible (un smartphone).
+Le projet visait initialement une détection par capteur radar/ultrason/LiDAR, sur le modèle des radars de recul pour cyclistes (type Garmin Varia). Plusieurs capteurs ont été évalués (HC-SR04, RCWL-0516, HLK-LD2410/LD2450, TF-Luna) sans offrir, à budget raisonnable, la portée et la directionnalité nécessaires. Le projet s'est réorienté vers une approche caméra + intelligence artificielle embarquée, plus accessible avec le matériel disponible.
 
-## Fonctionnement général
+## Principe de fonctionnement
 
-1. La caméra (arrière du téléphone, ou externe à terme) filme en continu.
-2. Chaque image est réduite puis analysée par [COCO-SSD](https://github.com/tensorflow/tfjs-models/tree/master/coco-ssd) (variante légère `lite_mobilenet_v2`) via TensorFlow.js, qui détecte les silhouettes de la classe `person`.
-3. La taille de la boîte englobante détectée, rapportée à la hauteur de l'image, sert de proxy de proximité. Sa variation dans le temps permet d'estimer une vitesse de rapprochement (approximation, pas une mesure réelle — voir [Modèle de distance](#modèle-de-distance-et-de-vitesse)).
-4. Selon la proximité et la vitesse de rapprochement, l'application passe par plusieurs niveaux d'alerte : `SCAN` → `VIGILANCE` → `ALERTE`, avec vibration, bip sonore et annonce vocale ("Piéton" / "Vélo").
-5. Au-delà d'un seuil de vitesse relative, l'application suppose qu'il s'agit d'un vélo plutôt que d'un piéton (une personne qui marche à la même allure que le porteur du téléphone a une vitesse de rapprochement quasi nulle).
+### 1. Détection
 
-## Fonctionnalités
+Chaque image de la caméra est réduite (~300px) puis analysée par [COCO-SSD](https://github.com/tensorflow/tfjs-models/tree/master/coco-ssd) (variante légère `lite_mobilenet_v2`) via TensorFlow.js, qui repère toutes les silhouettes de la classe `person` avec un score de confiance. Le modèle ne fait aucune distinction piéton/cycliste — une personne à pied et une personne à vélo sont détectées de la même façon (le vélo lui-même, vu de face ou de trois-quarts, n'est presque jamais reconnu comme tel par le modèle — c'est la personne qui compte).
 
-- Détection de personnes en temps réel (piéton ou cycliste, tous angles), sur l'appareil, sans connexion réseau requise après le premier chargement.
-- Estimation de proximité et de vitesse de rapprochement, avec hypothèse piéton/vélo.
-- Alertes progressives : vibration, bip sonore, annonce vocale (synthèse vocale du navigateur — passe par la sortie audio active, écouteurs Bluetooth compris).
-- Cadence de détection adaptative (ralentie en veille, accélérée dès qu'une personne est suivie) et caméra + détection coupées en arrière-plan, pour limiter l'échauffement et la consommation batterie.
-- Mode "écran éteint" : masque l'aperçu caméra et n'affiche qu'un statut texte minimal, pour un usage à l'oreille plutôt qu'à l'œil.
-- Réglages persistants (sensibilité, confiance de détection, son, vibration, mode écran éteint, objectif caméra choisi) via `localStorage`.
-- Sélection de l'objectif caméra (avant/arrière, ou objectif spécifique si le téléphone en expose plusieurs) et contrôle de zoom expérimental.
-- Popups d'aide contextuelle sur les réglages de sensibilité et de confiance.
-- Installable comme application (PWA) via "Ajouter à l'écran d'accueil", avec mise à jour automatique (le service worker recharge la page dès qu'une nouvelle version est détectée).
+### 2. Suivi (volontairement simple)
 
-## Stack technique
+Le modèle ne fournit aucune notion d'identité d'une image à l'autre — c'est notre code qui reconstitue un suivi minimal :
+- À chaque image, la **plus grande boîte détectée** est choisie comme cible suivie.
+- Un **garde-fou anti-saut d'identité** compare la nouvelle position/taille à la précédente : si l'écart est trop brutal pour être un mouvement réel à cette cadence (ex. la cible suivie bascule d'une personne à une autre dans un groupe), le suivi redémarre à zéro plutôt que d'interpréter ce saut comme un déplacement.
 
-- HTML / CSS / JavaScript vanilla, aucune étape de build.
-- [TensorFlow.js](https://www.tensorflow.org/js) + modèle [COCO-SSD](https://github.com/tensorflow/tfjs-models/tree/master/coco-ssd) (`lite_mobilenet_v2`), chargés depuis un CDN (jsDelivr).
-- Service worker pour le fonctionnement hors-ligne de l'interface (l'inférence IA nécessite le premier chargement des modèles CDN).
-- `localStorage` pour la persistance des réglages.
-- API Web utilisées : `getUserMedia`, `SpeechSynthesis`, `Vibration API`, `Wake Lock API`, `MediaDevices.enumerateDevices`.
+Ce n'est pas un vrai traqueur multi-objets (type SORT/DeepSORT) — une seule personne est suivie à la fois, les autres restent affichées mais ignorées pour le calcul d'alerte.
+
+### 3. Logique de déclenchement
+
+Le principe central : **une silhouette doit grossir suffisamment vite dans l'image pour déclencher quoi que ce soit** — sa taille seule ne suffit pas.
+
+- La hauteur de la boîte, en % de la hauteur de l'image, est mesurée à chaque image (`Proxim.`).
+- Sa variation dans le temps donne une **vitesse de grossissement** (%/seconde).
+- Cette vitesse doit dépasser un seuil minimal réglable (voir "Rapidité de grossissement minimum" plus bas) **avant** qu'un niveau d'alerte puisse se déclencher — en dessous, même une silhouette de grande taille reste ignorée.
+- Une fois ce seuil de vitesse franchi, la taille déjà atteinte décide seulement du niveau d'urgence : `VIGILANCE` ou `ALERTE`.
+- Le niveau atteint ne redescend plus tant que la personne ne s'éloigne pas clairement (rétrécissement net de sa boîte) ou ne disparaît pas du champ — pour éviter les coupures de signal en plein milieu d'une approche rapide.
+- Une personne déjà proche mais qui s'éloigne (ex. un piéton croisé) ne déclenche jamais rien sur ce seul critère de taille.
+
+### 4. Un mot sur la courbe de grossissement
+
+La taille apparente d'une personne suit une relation en **1/distance** (projection sténopé classique), pas linéaire. Pour une vitesse de rapprochement réelle constante, la **vitesse de grossissement apparente croît avec le carré de la proximité** — elle reste faible tant que la personne est loin, puis s'accélère brusquement dans les derniers mètres. C'est pour cette raison que le système réagit plus tard, en distance parcourue, face à un vélo rapide que face à un piéton lent, à réglage de sensibilité égal.
+
+### 5. Alertes
+
+- **Vibration + bip sonore** dès le niveau `VIGILANCE`, plus rapprochés et plus insistants en `ALERTE`.
+- **Annonce vocale** ("Attention", via la synthèse vocale du navigateur) à l'entrée en vigilance/alerte, répétée toutes les 2,5s tant que l'alerte persiste. Le son sort par la sortie audio active du téléphone — écouteurs Bluetooth compris.
+- **Signal de simple présence** (optionnel, voir réglages) : un carillon doux, une seule fois par personne détectée, même sans approche — pensé pour un usage en environnement peu fréquenté.
+
+### 6. Compensation automatique pour objectif grand-angle
+
+Un objectif grand-angle fait paraître une personne plus petite, à distance égale, qu'un objectif standard — donc grossir plus lentement en apparence. L'appli détecte automatiquement un objectif grand-angle (via des mots-clés dans son nom système, ex. `external`, `wide`) et réduit en conséquence le seuil de vitesse de grossissement appliqué, pour déclencher les alertes à une distance réelle cohérente quel que soit l'objectif utilisé.
+
+## Matériel recommandé
+
+**L'usage d'une caméra USB externe est fortement recommandé** par rapport à la caméra intégrée du téléphone, pour plusieurs raisons validées en test :
+
+- **Portage plus pratique** : la caméra peut être fixée sur une pochette dorsale, orientée précisément vers l'arrière, indépendamment de la position du téléphone lui-même (qui peut rester en poche, à plat, sans contrainte d'angle).
+- **Champ de vision généralement plus large** (~90° sur les modèles courants), pour une détection plus précoce sur les côtés — avec compensation automatique du seuil de grossissement (voir plus haut).
+- **Consommation comparable, parfois inférieure** à celle de la caméra intégrée du téléphone, d'après des tests comparatifs sur une heure d'usage continu (caméra externe UVC bon marché : ~90mA, part mineure de la consommation totale de l'application).
+- **Fonctionne nativement** avec cette PWA, sans code ni configuration particulière : une caméra USB UVC reconnue par Android (branchée via un adaptateur OTG USB-C) apparaît directement dans le sélecteur d'objectif du navigateur.
+
+**Recommandations pour le choix du module** : focale fixe (pas de zoom variable), connecteur UVC standard, champ de vision autour de 90° (au-delà, la distorsion optique en périphérie de cadre dégrade la fiabilité de détection sur les bords), résolution modeste suffisante (1280×720 est largement assez, l'image est de toute façon réduite avant analyse).
+
+## Installation
+
+1. Servir le contenu du dépôt en HTTPS (GitHub Pages, ou tout hébergeur statique) — **obligatoire**, `getUserMedia` (accès caméra) est refusé par le navigateur sur une origine non sécurisée.
+2. Ouvrir l'URL sur un smartphone Android/Chrome.
+3. "Ajouter à l'écran d'accueil" pour une installation façon application (icône dédiée, plein écran).
+4. Brancher la caméra externe (adaptateur OTG) avant de démarrer, si utilisée.
+
+## Utilisation et réglages
+
+Au premier lancement, appuyer sur **"Démarrer la caméra"** et accorder la permission demandée. Le bandeau du bas affiche en direct l'objet détecté et sa proximité estimée ; la pastille en haut indique l'état global (`SCAN — RAS` / `PERSONNE DÉTECTÉE` / `VIGILANCE` / `ALERTE`).
+
+Tous les réglages sont accessibles via l'icône ⚙, et sont sauvegardés automatiquement d'une session à l'autre :
+
+| Réglage | Rôle | Par défaut |
+|---|---|---|
+| **Son** | Active/désactive les bips et annonces vocales. | Activé |
+| **Vibration** | Active/désactive les vibrations (si le téléphone le permet). | Activé |
+| **Mode écran éteint** | Masque l'aperçu caméra et les détections à l'écran, pour économiser la batterie (utile en usage à l'oreille). L'écran doit tout de même rester déverrouillé — voir limitations. | Activé |
+| **Effet miroir** | Inverse l'affichage horizontalement, façon rétroviseur. N'affecte que l'aperçu visuel, jamais la détection. | Activé |
+| **Notifier toute présence** | Ajoute un signal doux, une fois par personne détectée, même sans approche — pour un usage en environnement peu fréquenté. | Désactivé |
+| **Seuil de vigilance** | Taille (% de la hauteur d'image) qu'une personne doit atteindre, une fois le seuil de vitesse franchi, pour passer en `ALERTE` plutôt qu'en simple `VIGILANCE`. | 24% |
+| **Confiance minimale de détection** | Score de confiance minimal du modèle en dessous duquel une détection est ignorée (filtre les faux positifs de type ombres, buissons). | 55% |
+| **Rapidité de grossissement minimum** | Curseur à 5 paliers (1 = 4%/s à 5 = 20%/s) : vitesse de grossissement minimale exigée avant toute notification. Palier bas → alertes plus fréquentes, y compris sur des approches lentes ; palier haut → seules les approches franches déclenchent quelque chose. | Palier 3 (12%/s) |
+| **Objectif de la caméra** | Apparaît automatiquement si plusieurs caméras sont détectées (avant/arrière/externe) — choix explicite de la source vidéo. | Caméra arrière |
+
+Chaque réglage numérique dispose d'un petit bouton d'aide (ⓘ) rappelant son fonctionnement exact directement dans l'appli.
+
+## Limitations connues
+
+- **L'écran doit rester allumé et déverrouillé** pendant l'utilisation : Android (comme iOS) suspend l'exécution JavaScript et coupe l'accès caméra dès que l'écran s'éteint ou que l'application passe réellement en arrière-plan. Un dispositif anti-veille (Wake Lock) empêche l'extinction automatique par inactivité, mais pas un verrouillage manuel.
+- Le suivi reste basique (une seule cible à la fois, pas de vrai traqueur multi-objets) — dans un environnement à plusieurs personnes de taille comparable, le garde-fou anti-saut limite les faux positifs sans garantir un suivi individuel parfait.
+- Les estimations de proximité restent relatives (% de l'image), pas une mesure de distance physique — le projet a volontairement abandonné la conversion en distance/vitesse réelle (trop dépendante d'hypothèses de calibration fragiles) au profit d'un critère plus robuste : la vitesse de grossissement seule.
+- La distinction piéton/vélo a été retirée : l'appli signale toute personne qui approche suffisamment vite, sans tenter de deviner son mode de déplacement.
+
+## Cadre d'usage
+
+L'application n'enregistre ni ne transmet aucune image — chaque frame est traitée en mémoire puis immédiatement jetée. Pour un usage strictement personnel (pas de diffusion, pas de finalité commerciale), ce type de traitement relève de l'exception domestique du RGPD (article 2.2.c), sur le même principe que les dashcams de véhicule. Cette note est informative, pas une consultation juridique.
 
 ## Structure du dépôt
 
 ```
 index.html       Structure de la page, tiroir de réglages, popups d'aide
 style.css         Thème visuel (HUD sombre façon radar)
-app.js            Toute la logique : détection, alertes, caméra, réglages
+app.js            Toute la logique : détection, suivi, alertes, caméra, réglages
 manifest.json     Manifeste PWA (icônes, nom, couleurs)
-sw.js             Service worker (cache applicatif, mise à jour automatique)
+sw.js             Service worker (fonctionnement hors-ligne, mise à jour automatique)
 icons/            Icônes de l'application (192px, 512px)
 ```
-
-## Déploiement
-
-Le projet est pensé pour être servi statiquement (GitHub Pages, ou tout hébergeur statique HTTPS) :
-
-1. Pousser le contenu du dépôt sur la branche `main`.
-2. Activer GitHub Pages (Settings → Pages → branche `main`, dossier `/`).
-3. Ouvrir l'URL générée sur un smartphone Android/Chrome.
-
-**HTTPS est obligatoire** — `getUserMedia` (accès caméra) est refusé par le navigateur sur une origine non sécurisée (sauf `localhost` en développement local).
-
-### Développement local
-
-Servir le dossier avec n'importe quel serveur statique, par exemple :
-
-```bash
-npx serve .
-```
-
-Pour tester l'accès caméra en dehors de `localhost`, un certificat HTTPS (auto-signé ou via un tunnel type ngrok) est nécessaire.
-
-## Réglages disponibles
-
-| Réglage | Rôle | Par défaut |
-|---|---|---|
-| Seuil de vigilance | Taille (% de la hauteur d'image) qu'une personne doit atteindre pour déclencher la vigilance ; l'alerte se déclenche vers 1,5× ce seuil. Une vitesse de rapprochement élevée peut aussi déclencher ces niveaux plus tôt. | 24% |
-| Confiance minimale de détection | Score de confiance minimal du modèle en dessous duquel une détection est ignorée. | 55% |
-| Son | Active/désactive les bips et annonces vocales. | Activé |
-| Vibration | Active/désactive les vibrations (si supportées par l'appareil). | Activé |
-| Mode écran éteint | Masque l'aperçu caméra et les détections, n'affiche qu'un statut texte, pour économiser la batterie en usage audio seul. | Désactivé |
-| Objectif de la caméra | Choix de l'objectif si le téléphone en expose plusieurs via `enumerateDevices` (souvent limité à avant/arrière selon les constructeurs). | Arrière |
-| Zoom (test objectif ultra grand-angle) | Contrôle expérimental, visible uniquement si l'appareil expose un zoom < 1.0 sur la piste vidéo — permet de tenter d'atteindre un objectif ultra grand-angle physique sur les téléphones à caméras fusionnées. | — |
-
-## Modèle de distance et de vitesse
-
-Aucune mesure de distance réelle n'est effectuée. L'estimation repose sur un modèle sténopé simplifié :
-
-```
-distance_m ≈ ASSUMED_HEIGHT_M / (2 × tan(VFOV/2) × (hauteur_boîte / hauteur_image))
-```
-
-Avec, dans `app.js` :
-- `ASSUMED_PERSON_HEIGHT_M = 1.65` — taille humaine moyenne supposée.
-- `VERTICAL_FOV_DEG = 50` — champ de vision vertical supposé de la caméra (calibré pour la caméra arrière d'un smartphone classique).
-
-La vitesse de rapprochement est dérivée de la variation de cette distance estimée sur une fenêtre glissante (~1,2s). Au-delà de `BIKE_SPEED_THRESHOLD_KMH = 5` km/h de rapprochement, l'application suppose un vélo plutôt qu'un piéton.
-
-**⚠️ Cette constante `VERTICAL_FOV_DEG` doit être recalibrée pour toute caméra externe** (le champ de vision d'une caméra USB dédiée diffère de celui d'un smartphone).
-
-### Protocole de calibration
-
-1. Installer la caméra dans sa position/angle définitifs.
-2. Mesurer une distance précise (mètre ruban) à laquelle se place une personne, dans l'axe de la caméra.
-3. Relever la valeur affichée dans le HUD ("Proxim.", en %).
-4. Calculer : `VFOV = 2 × atan( 1.65 / (2 × distance_mesurée_m × hauteur_boîte_%/100) )`
-5. Répéter à plusieurs distances pour vérifier la cohérence (une forte divergence entre les valeurs obtenues indique une distorsion optique significative, fréquente en grand angle).
-
-## Limitations connues
-
-- **L'écran doit rester allumé et déverrouillé** pendant l'utilisation : Android (comme iOS) suspend l'exécution JavaScript et coupe l'accès caméra dès que l'écran s'éteint ou que l'application passe réellement en arrière-plan. Le Wake Lock empêche l'extinction automatique par inactivité, mais pas un verrouillage manuel.
-- **Chrome pour Android ne supporte pas les webcams USB (UVC) via `getUserMedia`** — contrairement à Chrome desktop. L'utilisation d'une caméra externe nécessitera un passage en application native (ex. via Capacitor) ou un flux réseau (caméra IP / MJPEG).
-- Sur certains téléphones (caméras arrière multiples fusionnées en une seule "caméra logique" par le constructeur, ex. Motorola), les objectifs physiques secondaires (ultra grand-angle, téléobjectif) ne sont pas accessibles individuellement depuis le navigateur.
-- Les estimations de distance et de vitesse sont des approximations heuristiques, pas des mesures physiques certifiées — à calibrer et à interpréter avec cette réserve.
-- La distinction piéton/vélo repose uniquement sur la vitesse de rapprochement relative : un piéton qui marche vers un porteur à l'arrêt peut être classé "vélo ?" à tort.
-
-## Pistes en cours / à venir
-
-- Intégration d'une caméra USB externe (UVC, focale fixe, ~90°) pour déporter la fonction caméra du téléphone.
-- Passage à une application native (Capacitor) pour accéder à cette caméra externe, Chrome mobile ne le permettant pas nativement.
-- Recalibration du modèle de distance une fois la caméra externe en service.
 
 ## Licence
 
