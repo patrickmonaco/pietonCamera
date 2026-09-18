@@ -6,7 +6,7 @@ Aucune image n'est envoyée à un serveur ni enregistrée : la détection tourne
 
 ## Contexte
 
-Le projet visait initialement une détection par capteur radar/ultrason/LiDAR, sur le modèle des radars de recul pour cyclistes (type Garmin Varia). Plusieurs capteurs ont été évalués (HC-SR04, RCWL-0516, HLK-LD2410/LD2450, TF-Luna) sans offrir, à budget raisonnable, la portée et la directionnalité nécessaires. Le projet s'est réorienté vers une approche caméra + intelligence artificielle embarquée, plus accessible avec le matériel disponible.
+Le projet visait initialement une détection par capteur radar/ultrason/LiDAR, sur le modèle des radars de recul pour cyclistes (type Garmin Varia). Plusieurs capteurs ont été évalués (RCWL-0516, HLK-LD2410/LD2450) sans offrir, à budget raisonnable, la portée et la directionnalité nécessaires. Le projet s'est réorienté vers une approche caméra + intelligence artificielle embarquée, plus accessible avec le matériel disponible.
 
 ## Principe de fonctionnement
 
