@@ -59,6 +59,9 @@ Un objectif grand-angle fait paraître une personne plus petite, à distance ég
 **Recommandations pour le choix du module** : focale fixe (pas de zoom variable), connecteur UVC standard, champ de vision autour de 90° (au-delà, la distorsion optique en périphérie de cadre dégrade la fiabilité de détection sur les bords), résolution modeste suffisante (1280×720 est largement assez, l'image est de toute façon réduite avant analyse).
 <img width="647" height="430" alt="micro-camera" src="https://github.com/user-attachments/assets/2284fef1-2edb-4a29-855a-b6e7c52bfb9b" />
 
+***Exemple de système de fixation
+<img width="2156" height="2876" alt="IMG_20260910_085819028_HDR" src="https://github.com/user-attachments/assets/8e7c0bcf-d841-4501-a477-1ad4de28e7f0" />
+
 
 ## Installation
 
